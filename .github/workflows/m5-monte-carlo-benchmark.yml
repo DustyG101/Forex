@@ -1,4 +1,4 @@
-name: Auditoría M5 de febrero y marzo
+name: Prueba M5 de vetos y control Monte Carlo
 on:
   push:
     branches: [codex/m5-monte-carlo-benchmark]
@@ -33,13 +33,11 @@ jobs:
           github-token: ${{ github.token }}
           path: data/mc-comparison/gen268
           merge-multiple: true
-      - name: Audit frozen Gen 268 by feature and execution stage
-        run: python -m scripts.audit_m5_mc
+      - name: Replay vetoes and matched Monte Carlo controls
+        run: python -m scripts.veto_m5_mc
       - uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: m5-february-march-audit
-          path: |
-            data/mc-comparison/audit.json
-            data/mc-comparison/*-contratos-gen268.csv
+          name: m5-march-veto-monte-carlo
+          path: data/mc-comparison/veto.json
           if-no-files-found: warn
