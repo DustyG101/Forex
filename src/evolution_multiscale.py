@@ -156,10 +156,16 @@ def champion_key(result):
 def evolve_replica(inputs, founder, objective, arm, seed, *,
                    first_generation=FIRST_GENERATION, last_generation=LAST_GENERATION):
     """Mantiene el mejor individuo y reutiliza cruce y mutación del motor M5."""
+    inputs = arm_inputs(inputs, arm)
+    return evolve_population(lambda population: objective.evaluate(directions(inputs, population)), founder,
+                             arm, seed, first_generation=first_generation, last_generation=last_generation,
+                             ranking=champion_key)
+
+
+def evolve_population(evaluate, founder, arm, seed, *, first_generation, last_generation, ranking):
     if not 0 <= first_generation <= last_generation:
         raise ValueError('Intervalo de generaciones inválido')
     rng = np.random.default_rng([seed, first_generation])
-    inputs = arm_inputs(inputs, arm)
     sigma = .12
     wide_count = round(WIDE_MUTATION_FRACTION * POPULATION)
     parents_count = int(np.ceil(ELITE_FRACTION * POPULATION))
@@ -167,18 +173,14 @@ def evolve_replica(inputs, founder, objective, arm, seed, *,
     history = []
     winner = genome = founder_fitness = None
     for generation in range(first_generation, last_generation + 1):
-        sides = directions(inputs, population)
-        fitness = objective.evaluate(sides)
-        parents = np.lexsort((
-            -np.arange(POPULATION), -fitness['pf_log_std'], fitness['worst_delta_vs_mc'],
-            fitness['return_per_admission'], fitness['score'], fitness['qualifies'],
-        ))[-parents_count:][::-1]
+        fitness = evaluate(population)
+        parents = np.lexsort((-np.arange(POPULATION), *reversed(ranking(fitness))))[-parents_count:][::-1]
         best = parents[0]
         if generation == first_generation:
             founder_fitness = {name: values[0].tolist() for name, values in fitness.items()}
         record = dict(generation=generation, candidate=int(best),
                       **{name: values[best].tolist() for name, values in fitness.items()})
-        improved = winner is None or champion_key(record) > champion_key(winner)
+        improved = winner is None or ranking(record) > ranking(winner)
         if improved:
             winner, genome = record, population[best].copy()
         returns = fitness['return_per_admission']

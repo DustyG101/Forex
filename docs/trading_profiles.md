@@ -496,25 +496,33 @@ protegido y sirve exclusivamente para el replay de la Gen 333.
 
 La ablación ejecuta el genoma sellado Gen 354/43 sobre la matriz
 canónica de marzo y el diagnóstico de abril. Compara el gate estático,
-convicción p85, convicción más volatilidad y la variante elástica.
+convicción p85 y la variante elástica. El contraste histórico con un
+techo de volatilidad queda documentado en la corrida de la PR #30.
 La convicción es el valor absoluto de tanh aplicado al puntaje de
 salida. El p85 usa las 500 propuestas anteriores, incluidos los
 descartes. Los empates con el corte se descartan. Febrero aporta las
 500 propuestas de arranque y el estado continúa de marzo a abril.
 
-El filtro de volatilidad compara la volatilidad realizada de la última
-vela M15 cerrada con el p80 de las 48 horas anteriores, con un mínimo de
-48 observaciones válidas. La comparación excluye el valor actual del
-cálculo del percentil. Se descartan las propuestas que pasan convicción
-cuando falta historial válido para la volatilidad.
-
 Para ampliar la admisión, la convicción media debe superar 0,80 y las
 últimas 500 propuestas resueltas deben alcanzar 95 % de acierto en
-cada uno de tres bloques y en ambos regímenes. Cada régimen exige
-40 resultados. Se observan también las propuestas descartadas cuando
+cada uno de tres bloques cronológicos. Se observan también las propuestas descartadas cuando
 vence el contrato y se excluyen reembolsos. La política pasa de p85
 a p60, p30 y finalmente p0 tras cada 100 liquidaciones adicionales
-mientras mantiene esa evidencia. Si la pierde, regresa a p85. Con p0
-puede admitir propuestas con volatilidad extrema y datos válidos.
+mientras mantiene esa evidencia. Si la pierde, regresa al percentil inicial.
 El cupo horario y el stop de cuenta se aplican tras la decisión de
 admisión. El replay usa liquidación al vencimiento.
+
+### Evolución del gate de convicción, Gen 355 a 375
+
+El workflow compara p85, p80 y p75, con 128 individuos, semillas
+42, 43 y 44 y la Gen 354/43 como fundador común. El ranking prioriza
+PF estrictamente superior a 1,20 en marzo. Entre quienes pasan el PF,
+busca acercarse a 1,2 contratos/h. El margen monetario sobre el PF
+objetivo desempata. Cada candidato usa su propio historial móvil y
+pasa por el cupo horario y el stop de cuenta.
+
+El workflow publica los genomas y el arranque antes de cargar abril.
+El replay cruza cada campeón y el fundador con los tres percentiles.
+El informe guarda el rango y número de cortes observados para verificar
+que la convicción exigida cambia durante el replay. Se reporta también
+la capacidad de las admisiones congeladas con el cupo horario.

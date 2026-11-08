@@ -1,0 +1,64 @@
+name: Gate de convicción pura y Gen 355–375
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  evolve:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      OPENBLAS_NUM_THREADS: '1'
+      OMP_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+          cache: pip
+      - run: |
+          python -m pip install torch==2.6.0 --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install -r requirements.txt
+      - uses: actions/download-artifact@v8
+        with:
+          artifact-ids: 13627574393
+          run-id: 42507157819
+          github-token: ${{ github.token }}
+          path: data/adaptive-source
+          merge-multiple: true
+      - uses: actions/download-artifact@v8
+        with:
+          artifact-ids: 13631131495
+          run-id: 42514492433
+          github-token: ${{ github.token }}
+          path: data/adaptive-source
+          merge-multiple: true
+      - name: Fetch the canonical snapshot and Gen 354 weights
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          curl -fsSL -H "Authorization: Bearer $GH_TOKEN" \
+            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/artifacts/13631151337/zip" \
+            -o "$RUNNER_TEMP/march.zip"
+          unzip -p "$RUNNER_TEMP/march.zip" march-inputs.npz > data/adaptive-source/march-inputs.npz
+          unzip -p "$RUNNER_TEMP/march.zip" extension.json > data/adaptive-source/extension.json
+      - name: Select the nine replicas in March
+        run: python -m scripts.run_m5_conviction_evolution evolve
+      - uses: actions/upload-artifact@v7
+        with:
+          name: m5-conviction-evolution-sealed
+          path: |
+            reports/m5-conviction-evolution/evolution.json
+            reports/m5-conviction-evolution/warmup.npy
+          if-no-files-found: error
+      - name: Replay sealed genomes and percentile sensitivity
+        run: python -m scripts.run_m5_conviction_evolution replay
+      - uses: actions/upload-artifact@v7
+        with:
+          name: m5-conviction-evolution-replay
+          path: reports/m5-conviction-evolution/replay.json
+          if-no-files-found: error

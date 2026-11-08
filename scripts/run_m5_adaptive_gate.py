@@ -16,18 +16,16 @@ from scripts.run_m5_multiscale import (
     APRIL_SIGNATURE, APRIL_START, MARCH_SIGNATURE, MARCH_START, Q1, genome_hash, prepare_window,
 )
 from src.adaptive_gate import (
-    CONVICTION_WINDOW, MASTERY_ACCURACY, MASTERY_BLOCKS, MASTERY_CONVICTION, MASTERY_REGIME_MINIMUM,
-    MASTERY_STEP_SETTLEMENTS, PERCENTILE_STAGES, VOLATILITY_HOURS, VOLATILITY_MINIMUM_BARS,
-    VOLATILITY_PERCENTILE, AdaptiveGate, rolling_m15_regime,
+    CONVICTION_WINDOW, MASTERY_ACCURACY, MASTERY_BLOCKS, MASTERY_CONVICTION,
+    MASTERY_STEP_SETTLEMENTS, PERCENTILE_STAGES, AdaptiveGate,
 )
 from src.artifacts import file_sha256
 from src.decision import RiskConfig
-from src.evolution_context import m15_realized_volatility, native_direction_context
+from src.evolution_context import native_direction_context
 from src.evolution_lineage import MARKET
 from src.evolution_multiscale import FEATURE_NAMES, M5_TACTICAL, arm_inputs, direction_scores, scale_inputs
-from src.market import MarketConfig, PROTECTED_HOLDOUT_START
+from src.market import PROTECTED_HOLDOUT_START
 from src.replay_engine import replay_contracts
-from src.resampling import aggregate
 from src.train import write_json
 
 
@@ -37,7 +35,7 @@ OUTPUT = Path('reports/m5-adaptive-gate')
 PERIODS = (*Q1, '202604')
 GEN354_SHA256 = 'fdbba07e3400d466b8a3e5d8cd98de159808e8603b301f64d69122b5e2cf3bcb'
 PROBABILITY_NAMES = ('mc_prob_up', 'mc_prob_down', 'mc_prob_tie')
-VARIANTS = dict(conviction=(False, False), conviction_volatility=(True, False), elastic=(True, True))
+VARIANTS = dict(conviction=False, elastic=True)
 
 
 def archived_march(seal, reference, mean, std, paths):
@@ -60,7 +58,7 @@ def archived_march(seal, reference, mean, std, paths):
     return rows.assign(outcome=outcome, cond_volatility=volatility), inputs
 
 
-def february_scores(minutes, founder, quant, mean, std, genome):
+def february_inputs(minutes, founder, quant, mean, std):
     previous = minutes.loc[minutes.timestamp < MARCH_START]
     data = m5_features(previous, quant, end=MARCH_START)
     start = pd.Timestamp('2026-02-01T00:00:00Z')
@@ -70,23 +68,20 @@ def february_scores(minutes, founder, quant, mean, std, genome):
         raise ValueError('Faltan propuestas anteriores para inicializar la convicción')
     native = native_direction_context(previous, rows.index, end=MARCH_START)
     raw = rows.loc[:, list(M5_TACTICAL)].join(native).loc[:, list(FEATURE_NAMES)]
-    inputs = scale_inputs(raw.to_numpy(dtype=float), mean, std)
-    return direction_scores(arm_inputs(inputs, ARM), [genome])[0]
+    return scale_inputs(raw.to_numpy(dtype=float), mean, std)
 
 
-def simulate_admission(rows, scores, regimes, warmup, *, use_volatility, elastic):
-    gate = AdaptiveGate(use_volatility=use_volatility, elastic=elastic, warmup_scores=warmup)
+def simulate_admission(rows, scores, warmup, *, percentile=PERCENTILE_STAGES[0], elastic=True):
+    gate = AdaptiveGate(percentile=percentile, elastic=elastic, warmup_scores=warmup)
     pending = deque()
     decisions = []
-    for time, score, outcome, volatility, ceiling in zip(
-        rows.index, scores, rows.outcome, regimes.volatility, regimes.ceiling, strict=True,
-    ):
+    for time, score, outcome in zip(rows.index, scores, rows.outcome, strict=True):
         while pending and pending[0][0] <= time:
-            _, won, extreme = pending.popleft()
-            gate.observe_settlement(won, extreme)
-        decision = gate.decide(score, volatility, ceiling)
+            _, won = pending.popleft()
+            gate.observe_settlement(won)
+        decision = gate.decide(score)
         won = None if outcome == 0 else bool((1 if score >= 0. else -1) == outcome)
-        pending.append((time + MARKET.step, won, decision.extreme_volatility))
+        pending.append((time + MARKET.step, won))
         decisions.append(asdict(decision))
     return pd.DataFrame(decisions, index=rows.index)
 
@@ -115,14 +110,10 @@ def main():
     rows = pd.concat((march, april.rows))
     scores = direction_scores(arm_inputs(np.vstack((train, windows['april'][1])), ARM), [genome])[0]
     minutes = load_minutes(RAW, PERIODS, end=PROTECTED_HOLDOUT_START)
-    bars = aggregate(minutes, 1, 'M15', now=PROTECTED_HOLDOUT_START)
-    volatility = pd.Series(m15_realized_volatility(bars).to_numpy(),
-                           index=pd.DatetimeIndex(bars.timestamp + MarketConfig('M15').step))
-    regimes = rolling_m15_regime(volatility, rows.index)
-    warmup = february_scores(minutes, founder, quant, mean, std, genome)
+    warmup = direction_scores(arm_inputs(february_inputs(minutes, founder, quant, mean, std), ARM), [genome])[0]
     adaptive = {
-        name: simulate_admission(rows, scores, regimes, warmup, use_volatility=vol, elastic=elastic)
-        for name, (vol, elastic) in VARIANTS.items()
+        name: simulate_admission(rows, scores, warmup, elastic=elastic)
+        for name, elastic in VARIANTS.items()
     }
     side = pd.Series(np.where(scores >= 0., 1, -1), index=rows.index)
     reports, traces = {}, []
@@ -148,15 +139,13 @@ def main():
                 fully_open=int((state.percentile == 0.).sum()),
             )
             reports[period][name] = result
-            traces.append(pd.concat((log, state.reset_index(drop=True), regimes.loc[window.index].reset_index(drop=True)),
-                                    axis=1).assign(window=period, policy=name))
+            traces.append(pd.concat((log, state.reset_index(drop=True)), axis=1).assign(window=period, policy=name))
     report = dict(
         genome_sha256=GEN354_SHA256, warmup_proposals=len(warmup), windows=reports,
         adaptive_settings=dict(conviction_window=CONVICTION_WINDOW, percentile_stages=PERCENTILE_STAGES,
                                mastery_conviction=MASTERY_CONVICTION, mastery_accuracy=MASTERY_ACCURACY,
-                               mastery_blocks=MASTERY_BLOCKS, maturity_regime_minimum=MASTERY_REGIME_MINIMUM,
-                               maturity_step_settlements=MASTERY_STEP_SETTLEMENTS, volatility_hours=VOLATILITY_HOURS,
-                               volatility_percentile=VOLATILITY_PERCENTILE, volatility_min_bars=VOLATILITY_MINIMUM_BARS),
+                               mastery_blocks=MASTERY_BLOCKS,
+                               maturity_step_settlements=MASTERY_STEP_SETTLEMENTS),
         hourly_cap=gate['hourly_cap'], drawdown_stop_fraction=gate['drawdown_stop_fraction'],
         protected_holdout_evaluated=False,
     )

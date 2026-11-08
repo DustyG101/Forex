@@ -56,10 +56,11 @@ def apply_hourly_cap(entries, reasons, hourly_cap):
     if type(hourly_cap) is not int or hourly_cap < 1:
         raise ValueError('Cupo horario inválido')
     accepted = deque()
-    hour = pd.Timedelta(hours=1)
+    hour = pd.Timedelta(hours=1).value
+    times = entries.as_unit('ns').asi8
     decisions = np.asarray(reasons, dtype='<U24').copy()
     for i in np.flatnonzero(decisions == 'accepted'):
-        time = entries[i]
+        time = times[i]
         while accepted and accepted[0] <= time - hour:
             accepted.popleft()
         if len(accepted) >= hourly_cap:
@@ -125,7 +126,7 @@ def replay_contracts(rows, sides, account, risk, *, observed_hours, hourly_cap, 
         signal_rejections = ('confidence', 'expected_edge', 'volatility')
         rejected_key = 'rejected_probability_or_volatility_pct'
     else:
-        signal_rejections = ('conviction_warmup', 'conviction', 'volatility_warmup', 'volatility')
+        signal_rejections = ('conviction_warmup', 'conviction')
         if (np.shape(candidate_reasons) != (len(entries),)
                 or not np.isin(candidate_reasons, ('accepted', *signal_rejections)).all()):
             raise ValueError('El gate adaptativo debe decidir cada propuesta')

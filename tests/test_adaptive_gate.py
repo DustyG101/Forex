@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src.adaptive_gate import AdaptiveGate, rolling_m15_regime
+from src.adaptive_gate import AdaptiveGate, rolling_conviction_admissions
 from src.decision import RiskConfig
 from src.environment import AccountConfig
 from src.replay_engine import replay_contracts
@@ -11,56 +11,50 @@ from src.replay_engine import replay_contracts
 def test_cutoff_excludes_current_proposal_and_keeps_rejected_proposals():
     prior = np.linspace(0., 2., 500)
     gate = AdaptiveGate(warmup_scores=prior)
-    first = gate.decide(3., volatility=2., ceiling=1.)
+    first = gate.decide(.1)
     assert first.cutoff == pytest.approx(np.quantile(np.tanh(prior), .85))
-    assert first.reason == 'volatility'
-    following = gate.decide(3., volatility=0., ceiling=1.)
-    assert following.cutoff == pytest.approx(np.quantile(np.tanh(np.r_[prior[1:], 3.]), .85))
+    assert first.reason == 'conviction'
+    following = gate.decide(3.)
+    assert following.cutoff == pytest.approx(np.quantile(np.tanh(np.r_[prior[1:], .1]), .85))
     assert following.reason == 'accepted'
     tied = AdaptiveGate(warmup_scores=np.full(500, 3.))
     for i in range(500):
-        tied.observe_settlement(i % 4 != 0, i % 2 == 0)
-    decision = tied.decide(3., volatility=0., ceiling=1.)
+        tied.observe_settlement(i % 4 != 0)
+    decision = tied.decide(3.)
     assert decision.mean_conviction > .80
     assert decision.percentile == .85 and not decision.mastery_evidence
     assert decision.reason == 'conviction'
 
 
-def test_mastery_needs_both_regimes_and_reopens_in_confirmed_steps():
+def test_mastery_needs_settled_blocks_and_reopens_in_confirmed_steps():
     gate = AdaptiveGate(warmup_scores=np.full(500, 2.))
-    for _ in range(500):
-        gate.observe_settlement(True, False)
-    assert not gate.decide(3., 2., 1.).mastery_evidence
-    for i in range(500):
-        gate.observe_settlement(True, i % 2 == 0)
-    first = gate.decide(3., 2., 1.)
+    for _ in range(499):
+        gate.observe_settlement(True)
+    assert not gate.decide(3.).mastery_evidence
+    gate.observe_settlement(True)
+    first = gate.decide(3.)
     assert first.mastery_evidence and first.percentile == .85
     for expected in (.60, .30, 0.):
-        for i in range(100):
-            gate.observe_settlement(True, i % 2 == 0)
-        decision = gate.decide(3., 2., 1.)
+        for _ in range(100):
+            gate.observe_settlement(True)
+        decision = gate.decide(3.)
         assert decision.percentile == expected
-    assert decision.reason == 'accepted' and decision.cutoff == 0.
+    assert gate.decide(.01).reason == 'accepted' and decision.cutoff == 0.
     for _ in range(12):
-        gate.observe_settlement(False, True)
-    deteriorated = gate.decide(4., 2., 1.)
-    assert deteriorated.percentile == .85 and deteriorated.reason == 'volatility'
+        gate.observe_settlement(False)
+    deteriorated = gate.decide(.01)
+    assert deteriorated.percentile == .85 and deteriorated.reason == 'conviction'
 
 
-def test_m15_regime_uses_prior_closed_candles_and_rejects_stale_data():
-    closes = pd.date_range('2026-03-01T00:00Z', periods=195, freq='15min')
-    values = pd.Series(np.arange(len(closes), dtype=float), index=closes)
-    time = closes[-1]
-    decisions = pd.DatetimeIndex([time - pd.Timedelta(minutes=5), time,
-                                  time + pd.Timedelta(minutes=10), time + pd.Timedelta(minutes=15)])
-    result = rolling_m15_regime(values, decisions)
-    assert result.volatility.tolist()[:3] == [193., 194., 194.]
-    assert result.ceiling.iloc[1] == pytest.approx(np.quantile(values.iloc[-193:-1], .8))
-    assert result.iloc[-1].isna().all()
-    changed = values.copy()
-    changed.iloc[-1] = 1e6
-    alternative = rolling_m15_regime(changed, decisions)
-    assert result.ceiling.equals(alternative.ceiling)
+@pytest.mark.parametrize('percentile', [.85, .80, .75])
+def test_rolling_cutoffs_move_autonomously_and_match_batch(percentile):
+    scores = np.r_[np.linspace(-2., 2., 500), np.linspace(-3., 3., 128)]
+    gate = AdaptiveGate(percentile=percentile, warmup_scores=scores[:500])
+    decisions = [gate.decide(score) for score in scores[500:]]
+    np.testing.assert_array_equal([d.reason == 'accepted' for d in decisions],
+                                  rolling_conviction_admissions(scores, percentile)[500:])
+    assert len({d.cutoff for d in decisions}) > 1
+    assert {d.percentile for d in decisions} == {percentile}
 
 
 def test_adaptive_admission_keeps_risk_cap_and_account_stop():
