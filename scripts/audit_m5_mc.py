@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 from scipy.stats import ks_2samp, spearmanr
 
-from scripts.compare_m5_mc import GENOMES, ROOT, prepared_data, read_manifest
+from scripts.compare_m5_mc import GENOMES, RAW, ROOT, prepared_data, read_manifest
 from src.decision import RiskConfig
 from src.environment import BinaryOptionsEnv
 from src.evolution_context import build_observations, closed_trend_bias
@@ -118,6 +118,7 @@ def main():
     quant = QuantConfig.from_metadata(manifest['quant_config'])
     train_end, search_end = (pd.Timestamp(manifest['splits'][name]['end']) for name in ('train', 'search'))
     founder = load_founder(GENOMES[268], None, train_end, search_end)
+    RAW.mkdir(parents=True, exist_ok=True)
     data = prepared_data(['202601','202602','202603'], quant)
     data = data.loc[data.timestamp + MARKET.step <= pd.Timestamp('2026-04-01T00:00:00Z')]
     ctx_raw = build_observations(data)
