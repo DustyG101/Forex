@@ -1,0 +1,57 @@
+name: Gen 354 contra el gate de referencia
+on:
+  push:
+    branches: [codex/m5-gen333-gate-sensitivity]
+    paths: ['scripts/replay_gen354_reference_gate.py', '.github/workflows/m5-gen354-reference-gate.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      OPENBLAS_NUM_THREADS: '1'
+      OMP_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+          cache: pip
+      - run: |
+          python -m pip install torch==2.6.0 --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install -r requirements.txt
+      - uses: actions/download-artifact@v8
+        with:
+          artifact-ids: 13627574393
+          run-id: 42507157819
+          github-token: ${{ github.token }}
+          path: data/gate-sensitivity
+          merge-multiple: true
+      - uses: actions/download-artifact@v8
+        with:
+          artifact-ids: 13631131495
+          run-id: 42514492433
+          github-token: ${{ github.token }}
+          path: data/gate-sensitivity
+          merge-multiple: true
+      - name: Fetch the exact second-attempt snapshot by artifact ID
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          curl -fsSL -H "Authorization: Bearer $GH_TOKEN" \
+            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/artifacts/13631151337/zip" \
+            -o "$RUNNER_TEMP/march.zip"
+          unzip -p "$RUNNER_TEMP/march.zip" march-inputs.npz > data/gate-sensitivity/march-inputs.npz
+          unzip -p "$RUNNER_TEMP/march.zip" extension.json > data/gate-sensitivity/extension.json
+      - run: python -m scripts.replay_gen354_reference_gate
+      - uses: actions/upload-artifact@v7
+        with:
+          name: m5-gen354-reference-gate
+          path: reports/gen354-reference-gate/
+          if-no-files-found: error
