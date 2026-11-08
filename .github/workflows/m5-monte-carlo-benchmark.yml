@@ -1,4 +1,4 @@
-name: Comparación M5 contra Monte Carlo
+name: Auditoría M5 de febrero y marzo
 on:
   push:
     branches: [codex/m5-monte-carlo-benchmark]
@@ -26,17 +26,6 @@ jobs:
         run: |
           python -m pip install torch==2.6.0 --index-url https://download.pytorch.org/whl/cpu
           python -m pip install -r requirements.txt
-      - uses: actions/cache/restore@v6
-        with:
-          path: data/histdata_scalping
-          key: histdata-scalping-2025-${{ hashFiles('datasets/eurusd/manifest.json') }}
-      - uses: actions/download-artifact@v8
-        with:
-          artifact-ids: 13602723888
-          run-id: 42445210001
-          github-token: ${{ github.token }}
-          path: data/mc-comparison/gen239
-          merge-multiple: true
       - uses: actions/download-artifact@v8
         with:
           artifact-ids: 13605260077
@@ -44,13 +33,13 @@ jobs:
           github-token: ${{ github.token }}
           path: data/mc-comparison/gen268
           merge-multiple: true
-      - name: Replay historical confirmation
-        run: python -m scripts.compare_m5_mc historical
-      - name: Compare on fresh chronological windows
-        run: python -m scripts.compare_m5_mc fresh
+      - name: Audit frozen Gen 268 by feature and execution stage
+        run: python -m scripts.audit_m5_mc
       - uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: m5-monte-carlo-comparison
-          path: data/mc-comparison/*.json
+          name: m5-february-march-audit
+          path: |
+            data/mc-comparison/audit.json
+            data/mc-comparison/*-contratos-gen268.csv
           if-no-files-found: warn
