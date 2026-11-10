@@ -10,7 +10,7 @@ from src.data_farm import (
     normalized_context_matrix,
 )
 from src.multi_asset_evolution import (
-    PAIRS, assert_zero_context_equivalence, expand_generation_zero,
+    PAIRS, _align_m15_to_m5, assert_zero_context_equivalence, expand_generation_zero,
     load_generation_zero, multi_asset_fitness, portfolio_kill_switch,
 )
 
@@ -148,3 +148,13 @@ def test_correlated_losses_and_combined_drawdown_trigger_global_kill_switch():
         "combined_drawdown_limit", "correlated_losses_with_drawdown"
     )
     assert result["combined_drawdown"] >= 0.15
+
+
+
+def test_m15_alignment_rejects_context_at_exactly_15_minute_age():
+    minute = 60 * 1_000_000_000
+    m5 = np.asarray([5, 10, 15, 20, 25, 30], dtype=np.int64) * minute
+    m15 = np.asarray([15], dtype=np.int64) * minute
+    valid, indices = _align_m15_to_m5(m5, m15)
+    np.testing.assert_array_equal(valid, [False, False, True, True, True, False])
+    np.testing.assert_array_equal(indices, [-1, -1, 0, 0, 0, 0])
