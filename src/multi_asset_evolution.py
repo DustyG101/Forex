@@ -635,6 +635,21 @@ def _load_npz(path: Path):
         return {key: data[key].copy() for key in data.files}
 
 
+def _verify_context_feature_names(asset: dict, label: str):
+    encoded = asset.get("context_feature_names")
+    if encoded is None:
+        raise ValueError(f"{label}: falta el contrato ordenado de nombres de features")
+    values = np.asarray(encoded)
+    if values.size != 1:
+        raise ValueError(f"{label}: context_feature_names debe ser un escalar JSON")
+    try:
+        names = json.loads(str(values.reshape(-1)[0]))
+    except (TypeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"{label}: context_feature_names inválido") from exc
+    if tuple(names) != tuple(FEATURE_NAMES):
+        raise ValueError(f"{label}: orden/versión de features no coincide con Data Farm")
+
+
 def load_multicurrency_datasets(data_root: str | Path):
     """Join Data Farm M5/M15 context to the existing PR44 eight-column base.
 
@@ -657,40 +672,53 @@ def load_multicurrency_datasets(data_root: str | Path):
         for name, obj in (("M5", m5), ("M15", m15)):
             if any(key not in obj for key in required):
                 raise ValueError(f"{pair}/{name}.npz carece de {required}")
+            _verify_context_feature_names(obj, f"{pair}/{name}.npz")
         base_times = base.get("decision_times_ns")
         if base_times is None or "timeframe" not in base or "volatility" not in base:
             raise ValueError(f"{pair}/base_m5.npz requiere decision_times_ns, timeframe y volatility")
         t5 = np.asarray(m5["decision_times_ns"], dtype=np.int64)
         t15 = np.asarray(m15["decision_times_ns"], dtype=np.int64)
         tb = np.asarray(base_times, dtype=np.int64)
-        if not np.array_equal(t5, tb):
-            raise ValueError(f"{pair}: la matriz base M5 no coincide exactamente con Data Farm M5")
-        if np.any(np.diff(t5) <= 0) or np.any(np.diff(t15) <= 0):
-            raise ValueError(f"{pair}: timestamps no crecientes")
+        base_matrix_all = np.asarray(base["timeframe"], dtype=np.float64)
+        vol_all = np.asarray(base["volatility"], dtype=np.float64)
         c5 = np.asarray(m5["context_features"], dtype=np.float64)
         c15 = np.asarray(m15["context_features"], dtype=np.float64)
-        if c5.shape != (len(t5), CONTEXT_PER_TIMEFRAME) or c15.shape != (len(t15), CONTEXT_PER_TIMEFRAME):
-            raise ValueError(f"{pair}: matriz de contexto debe ser N x 21 en ambos timeframes")
+        close_all = np.asarray(m5["close"], dtype=np.float64)
+        if not np.array_equal(t5, tb):
+            raise ValueError(f"{pair}: la matriz base M5 no coincide exactamente con Data Farm M5")
+        if (t5.ndim != 1 or t15.ndim != 1 or len(t5) < 100 or len(t15) < 40
+                or np.any(np.diff(t5) <= 0) or np.any(np.diff(t15) <= 0)):
+            raise ValueError(f"{pair}: timestamps insuficientes o no crecientes")
+        if (base_matrix_all.shape != (len(t5), BASE_FEATURE_COUNT)
+                or vol_all.shape != (len(t5),) or close_all.shape != (len(t5),)
+                or c5.shape != (len(t5), CONTEXT_PER_TIMEFRAME)
+                or c15.shape != (len(t15), CONTEXT_PER_TIMEFRAME)):
+            raise ValueError(f"{pair}: tamaños incompatibles entre precios, features y GARCH")
+        if (not np.isfinite(base_matrix_all).all() or not np.isfinite(vol_all).all()
+                or not np.isfinite(close_all).all() or not np.isfinite(c5).all()
+                or not np.isfinite(c15).all()):
+            raise ValueError(f"{pair}: NaN/Inf en la matriz base, volatilidad o contexto")
         if not np.array_equal(np.asarray(m5["row_times_ns"], dtype=np.int64) + step5, t5):
             raise ValueError(f"{pair}: timestamp M5 no corresponde a su cierre")
         if not np.array_equal(np.asarray(m15["row_times_ns"], dtype=np.int64) + step15, t15):
             raise ValueError(f"{pair}: timestamp M15 no corresponde a su cierre")
-        # At each M5 decision, use only the latest M15 candle already closed.
+        # At each M5 decision, use only a recently closed M15 candle.
         idx15 = np.searchsorted(t15, t5, side="right") - 1
-        valid = idx15 >= 0
+        valid = (idx15 >= 0)
+        valid[valid] &= (t5[valid] - t15[idx15[valid]]) <= step15
         if valid.sum() < 100:
-            raise ValueError(f"{pair}: cobertura M15 cerrada insuficiente para alinear M5")
+            raise ValueError(f"{pair}: cobertura M15 cerrada y reciente insuficiente para alinear M5")
         t5 = t5[valid]
         idx15 = idx15[valid]
-        base_matrix = np.asarray(base["timeframe"], dtype=np.float64)[valid]
-        vol = np.asarray(base["volatility"], dtype=np.float64)[valid]
+        base_matrix = base_matrix_all[valid]
+        vol = vol_all[valid]
         m5_frame = pd.DataFrame(c5[valid], columns=FEATURE_NAMES)
         m15_frame = pd.DataFrame(c15[idx15], columns=FEATURE_NAMES)
         context = np.column_stack((
             normalized_context_matrix(m5_frame),
             normalized_context_matrix(m15_frame),
         ))
-        close = np.asarray(m5["close"], dtype=np.float64)[valid]
+        close = close_all[valid]
         outcomes = np.zeros(len(t5), dtype=np.int8)
         contiguous = np.zeros(len(t5), dtype=bool)
         if len(t5) > 1:
