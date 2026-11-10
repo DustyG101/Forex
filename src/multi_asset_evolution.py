@@ -745,7 +745,8 @@ def load_multicurrency_datasets(data_root: str | Path):
 def run_evolution(seed_manifest: str | Path, data_root: str | Path,
                   output_dir: str | Path, config: EvolutionConfig | None = None):
     cfg = config or EvolutionConfig()
-    original, seed_metadata, _ = load_generation_zero(seed_manifest)
+    seed_path = Path(seed_manifest)
+    original, seed_metadata, _ = load_generation_zero(seed_path)
     population = expand_generation_zero(original)
     assets = load_multicurrency_datasets(data_root)
     rng = np.random.default_rng(cfg.seed)
@@ -753,37 +754,60 @@ def run_evolution(seed_manifest: str | Path, data_root: str | Path,
     output.mkdir(parents=True, exist_ok=True)
     report = dict(
         protocol="PR45_MULTI_CURRENCY_GENETIC_RESEARCH_v1",
-        seed_manifest=str(seed_manifest),
+        seed_manifest=str(seed_path),
+        seed_manifest_sha256=sha256(seed_path.read_bytes()).hexdigest(),
         generation_zero=[dict(meta, padded_context_weights="zero") for meta in seed_metadata],
         config=cfg.__dict__,
         generations=[],
         fitness_definition="min(PF_pair) * (1 - max(DD_pair_fraction))",
+        fitness_infinite_pf_policy="PF=+infinity only when a pair has >=1 win and zero losses; no-trade/all-refund PF is undefined and disqualifies",
         risk_model="four independent 1000 USD simulated accounts; 10 USD stake; 0.80 payout; 20% account DD; 2 fills/hour",
+        q3_usage="provenance and immutable generation-zero ancestry only; Q3 rows are not loaded as evolution data",
     )
 
     for generation in range(cfg.generations + 1):
-        records, ledgers, returns = [], [], []
-        for i, genome in enumerate(population):
+        records = []
+        ledgers = []
+        for genome in population:
             evaluated = evaluate_multicurrency_genome(genome, assets)
             records.append(evaluated)
             ledgers.append(evaluated["ledgers"])
-            returns.append(evaluated["portfolio_returns"])
+
+        rng_state = json.dumps(rng.bit_generator.state, sort_keys=True)
+        individuals = []
+        for i, (genome, record) in enumerate(zip(population, records, strict=True)):
+            individuals.append(dict(
+                individual=i,
+                genome_sha256=_genome_digest(genome),
+                source_seed_id=seed_metadata[i]["id"] if generation == 0 and i < len(seed_metadata) else None,
+                fitness=record["fitness"],
+                pair_metrics=record["pair_metrics"],
+            ))
+
         summary = dict(
             generation=generation,
             population_size=len(population),
-            individuals=[
-                dict(
-                    individual=i,
-                    fitness=record["fitness"],
-                    pair_metrics=record["pair_metrics"],
-                ) for i, record in enumerate(records)
-            ],
+            individuals=individuals,
+            rng_state_before_next_breeding=rng_state,
         )
         report["generations"].append(summary)
+
+        # A restart can restore both the exact matrix and PRNG state without
+        # depending on temporary runner memory or recomputing earlier generations.
+        checkpoint_path = output / f"generation-{generation:03d}-checkpoint.npz"
+        np.savez_compressed(
+            checkpoint_path,
+            generation=np.asarray(generation, dtype=np.int64),
+            genomes=population.astype("<f8", copy=True),
+            genome_sha256=np.asarray([_genome_digest(g) for g in population]),
+            rng_state=np.asarray(rng_state),
+        )
+
         for i, ledger_by_pair in enumerate(ledgers):
             for pair, trades in ledger_by_pair.items():
                 path = output / f"generation-{generation:03d}-individual-{i:03d}-{pair}.json"
                 path.write_text(json.dumps(trades, indent=2, allow_nan=False) + "\n", encoding="utf-8")
+
         if generation < cfg.generations:
             population = breed_generation(population, records, cfg, rng)
 
