@@ -2,6 +2,12 @@ name: PR44 — Q3 2026 Single-Pass OOS / all 24 frozen FX genomes
 
 on:
   workflow_dispatch:
+    inputs:
+      run_audit:
+        description: "Run the irreversible first Q3 OOS pass after preflight (leave false for preflight only)"
+        required: true
+        default: false
+        type: boolean
   push:
     branches:
       - codex/forex-pr44-q3-single-pass-oos
@@ -24,36 +30,72 @@ env:
 
 jobs:
   oos_single_pass:
-    name: Preflight 4 certified Q3 sources, then ONE pass of 24 frozen models
+    name: Preflight 4 certified Q3 sources and 24 frozen models; optionally run ONE OOS pass
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
-      - name: Zero-compute Q3 source readiness gate (BEFORE any pip installs)
+      - name: Download four public Q3 release assets (no original-repo token)
+        run: |
+          set -euo pipefail
+          mkdir -p reports/pr44-q3-native
+          for PAIR in EURUSD GBPUSD AUDUSD USDCAD; do
+            slug="$(echo "$PAIR" | tr '[:upper:]' '[:lower:]')"
+            tag="data-pr44-q3-${slug}-m5-m15-garch-universe-2026q3-v1"
+            dir="reports/pr44-q3-native/$slug"
+            mkdir -p "$dir"
+            base="https://github.com/Asriel550/Forex/releases/download/$tag"
+            curl --fail --location --silent --show-error "$base/universe.npz" -o "$dir/universe.npz"
+            curl --fail --location --silent --show-error "$base/manifest.json" -o "$dir/manifest.json"
+            test -s "$dir/universe.npz"
+            test -s "$dir/manifest.json"
+          done
+
+      - name: Retrieve the 24 original PR41 and PR43 artifacts into reports/
         env:
-          GH_TOKEN: ${{ github.token }}
           ORIGINAL_REPO_READ_TOKEN: ${{ secrets.ORIGINAL_REPO_READ_TOKEN }}
         run: |
           set -euo pipefail
           if [[ -z "${ORIGINAL_REPO_READ_TOKEN:-}" ]]; then
-            echo "::error::BLOCKED: Add repository secret ORIGINAL_REPO_READ_TOKEN with actions:read access to Asriel550/Forex."
+            echo "::error::BLOCKED: GitHub Actions artifact ZIP downloads require ORIGINAL_REPO_READ_TOKEN with actions:read access to Asriel550/Forex. The artifact listing is public, but GitHub's ZIP download endpoint is permission-protected."
             exit 1
           fi
+          api="https://api.github.com/repos/Asriel550/Forex"
+          mkdir -p reports/pr44-control-models reports/pr44-evolved-models
           for PAIR in EURUSD GBPUSD AUDUSD USDCAD; do
             slug="$(echo "$PAIR" | tr '[:upper:]' '[:lower:]')"
-            tag="data-pr44-q3-${slug}-m5-m15-garch-universe-2026q3-v1"
-            if ! gh release view "$tag" --repo Asriel550/Forex >/dev/null 2>&1; then
-              echo "::error::BLOCKED: Missing independently certified Q3 M5/M15/GARCH release for $PAIR: $tag"
-              exit 1
-            fi
-            for asset in universe.npz manifest.json; do
-              if ! gh release view "$tag" --repo Asriel550/Forex --json assets \
-                  --jq '.assets[].name' | grep -Fxq "$asset"; then
-                echo "::error::BLOCKED: Q3 $PAIR release missing $asset"
-                exit 1
-              fi
+            for SEED in 42 43 44; do
+              name="pr41-native-$PAIR-seed-$SEED"
+              id="$(curl --fail --silent --show-error \
+                -H "Authorization: Bearer $ORIGINAL_REPO_READ_TOKEN" \
+                -H "Accept: application/vnd.github+json" \
+                "$api/actions/runs/42576852134/artifacts?per_page=100" \
+                | jq -er --arg name "$name" '[.artifacts[] | select(.name == $name and .expired == false)] | if length == 1 then .[0].id else error("expected exactly one non-expired artifact: " + $name) end')"
+              zip="$(mktemp)"
+              curl --fail --location --silent --show-error \
+                -H "Authorization: Bearer $ORIGINAL_REPO_READ_TOKEN" \
+                -H "Accept: application/vnd.github+json" \
+                "$api/actions/artifacts/$id/zip" -o "$zip"
+              unzip -q "$zip" -d reports/pr44-control-models
+              rm -f "$zip"
+
+              name="pr43-continued-$PAIR-seed-$SEED"
+              id="$(curl --fail --silent --show-error \
+                -H "Authorization: Bearer $ORIGINAL_REPO_READ_TOKEN" \
+                -H "Accept: application/vnd.github+json" \
+                "$api/actions/runs/42647437793/artifacts?per_page=100" \
+                | jq -er --arg name "$name" '[.artifacts[] | select(.name == $name and .expired == false)] | if length == 1 then .[0].id else error("expected exactly one non-expired artifact: " + $name) end')"
+              zip="$(mktemp)"
+              curl --fail --location --silent --show-error \
+                -H "Authorization: Bearer $ORIGINAL_REPO_READ_TOKEN" \
+                -H "Accept: application/vnd.github+json" \
+                "$api/actions/artifacts/$id/zip" -o "$zip"
+              unzip -q "$zip" -d reports/pr44-evolved-models
+              rm -f "$zip"
             done
           done
-      - uses: actions/checkout@v6
+
+      - name: Checkout this frozen PR44 branch
+        uses: actions/checkout@v6
         with:
           persist-credentials: false
       - uses: actions/setup-python@v6
@@ -66,42 +108,36 @@ jobs:
             gymnasium==1.1.1 'pytest>=8.3'
       - name: Pre-registered policy and causality checks; SYNTHETIC ONLY
         run: python -m pytest -q tests/test_pr44_q3_single_pass_audit.py
-      - name: Retrieve 12 original controls from completed PR41
-        uses: actions/download-artifact@v8
-        with:
-          pattern: pr41-native-*
-          run-id: 42576852134
-          repository: Asriel550/Forex
-          github-token: ${{ secrets.ORIGINAL_REPO_READ_TOKEN }}
-          path: reports/pr44-control-models
-      - name: Retrieve 12 evolved models from completed PR43 (no new evolution)
-        uses: actions/download-artifact@v8
-        with:
-          pattern: pr43-continued-*
-          run-id: 42647437793
-          repository: Asriel550/Forex
-          github-token: ${{ secrets.ORIGINAL_REPO_READ_TOKEN }}
-          path: reports/pr44-evolved-models
-      - name: Download four already-certified Q3 inference universes ONCE
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: Zero-compute preflight — verify all 24 frozen lineages and four Q3 asset hashes
         run: |
-          set -euo pipefail
-          for PAIR in EURUSD GBPUSD AUDUSD USDCAD; do
-            slug="$(echo "$PAIR" | tr '[:upper:]' '[:lower:]')"
-            dir="reports/pr44-q3-native/$slug"
-            mkdir -p "$dir"
-            gh release download "data-pr44-q3-${slug}-m5-m15-garch-universe-2026q3-v1" \
-              --repo Asriel550/Forex --pattern universe.npz \
-              --pattern manifest.json --dir "$dir" --clobber
-          done
+          python - <<'PY'
+          import json
+          from hashlib import sha256
+          from pathlib import Path
+          from scripts.run_pr44_q3_single_pass_audit import frozen_24, require_q3_files, SOURCE_SHA, SYMBOLS
+          models = frozen_24("reports/pr44-control-models", "reports/pr44-evolved-models")
+          assert len(models) == 24
+          q3 = require_q3_files("reports/pr44-q3-native")
+          for symbol in SYMBOLS:
+              archive, manifest = q3[symbol]
+              meta = json.loads(manifest.read_text(encoding="utf-8"))
+              assert meta.get("symbol") == symbol
+              assert meta.get("frozen_h1_input_sha256") == SOURCE_SHA[symbol]
+              assert sha256(archive.read_bytes()).hexdigest() == meta.get("universe_sha256")
+              assert meta.get("schema") == "PR44_Q3_native_M5_M15_GARCH_universe_v1"
+              print(f"PRE-FLIGHT OK {symbol}: Q3 asset SHA256 and manifest")
+          print("PRE-FLIGHT OK: 24/24 frozen genomes, lineage and pinned hashes")
+          PY
+
       - name: One-shot OOS read-only replay, 24 frozen genomes, 4 isolated account ledgers
+        if: inputs.run_audit == true
         run: |
           python -m scripts.run_pr44_q3_single_pass_audit \
             --control-root reports/pr44-control-models \
             --evolved-root reports/pr44-evolved-models \
             --q3-root reports/pr44-q3-native
       - name: Publish final decision table without choosing any winner
+        if: inputs.run_audit == true
         run: |
           python - <<'PY'
           import json,os
@@ -112,19 +148,20 @@ jobs:
           assert d['model_selection_performed'] is False and d['oos_first_pass'] is True
           assert len(d['results'])==24
           with Path(os.environ['GITHUB_STEP_SUMMARY']).open('a') as f:
-            f.write('## PR44 frozen-model Q3 2026 OOS, no model selection or refits\n\n')
-            f.write(f"**Passing: {d['passes']} / 24** — complete July–September, independent accounts.\n\n")
-            f.write('| Group | Pair | Seed | PF Q3 | DD Q3 | Degradation H1 | Trades | Verdict |\n')
-            f.write('| --- | --- | ---: | ---: | ---: | ---: | ---: | --- |\n')
+            f.write('## PR44 frozen-model Q3 2026 OOS, no model selection or refits\\n\\n')
+            f.write(f"**Passing: {d['passes']} / 24** — complete July–September, independent accounts.\\n\\n")
+            f.write('| Group | Pair | Seed | PF Q3 | DD Q3 | Degradation H1 | Trades | Verdict |\\n')
+            f.write('| --- | --- | ---: | ---: | ---: | ---: | ---: | --- |\\n')
             for r in d['results']:
               pf='Undefined' if r['pf_q3'] is None else f"{r['pf_q3']:.3f}"
               deg='Undefined' if r['degradation_pct'] is None else f"{r['degradation_pct']:.1f}%"
               f.write(f"| {r['group']} | {r['symbol']} | {r['seed']} | {pf} | "
                       f"{r['dd_q3_pct']:.2f}% | {deg} | {r['executed_q3']} | "
-                      f"{'PASS' if r['qualifies'] else 'FAIL'} |\n")
-            f.write('\n**All 24 models evaluated**. No optimization, promotion or retrospective model picking.\n')
+                      f"{'PASS' if r['qualifies'] else 'FAIL'} |\\n")
+            f.write('\\n**All 24 models evaluated**. No optimization, promotion or retrospective model picking.\\n')
           PY
       - uses: actions/upload-artifact@v7
+        if: inputs.run_audit == true
         with:
           name: pr44-final-q3-oos-24-frozen-genomes
           path: reports/pr44-q3-single-pass/q3-verdict.json
