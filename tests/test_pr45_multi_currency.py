@@ -5,13 +5,15 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from src.data_farm import (
-    DataFarmConfig, FEATURE_NAMES, build_micro_event_features,
+from src.context_features import (
+    ContextConfig, FEATURE_NAMES, build_micro_event_features,
     normalized_context_matrix,
 )
+from src.evolution_multiscale import evolve_population as original_evolve_population
 from src.multi_asset_evolution import (
-    PAIRS, _align_m15_to_m5, assert_zero_context_equivalence, expand_generation_zero,
-    load_generation_zero, multi_asset_fitness, portfolio_kill_switch,
+    EvolutionConfig, PAIRS, _align_m15_to_m5, assert_zero_context_equivalence,
+    evolve_population, expand_generation_zero, load_generation_zero,
+    multi_asset_fitness, portfolio_kill_switch,
 )
 
 
@@ -41,7 +43,7 @@ def _ohlcv_bars(count=130, start="2026-11-09T00:00:00Z", minutes=5):
     ))
 
 
-def test_data_farm_emits_fvg_and_sweep_as_context_not_gates():
+def test_context_inputs_emit_fvg_and_sweep_as_context_not_gates():
     bars = _ohlcv_bars()
     features = build_micro_event_features(bars, timeframe="M5")
     assert tuple(n for n in features.columns if n in FEATURE_NAMES) == FEATURE_NAMES
@@ -158,3 +160,10 @@ def test_m15_alignment_rejects_context_at_exactly_15_minute_age():
     valid, indices = _align_m15_to_m5(m5, m15)
     np.testing.assert_array_equal(valid, [False, False, True, True, True, False])
     np.testing.assert_array_equal(indices, [-1, -1, 0, 0, 0, 0])
+
+
+def test_multi_currency_uses_the_existing_evolution_engine():
+    assert evolve_population is original_evolve_population
+    config = EvolutionConfig()
+    assert config.generations == 20
+    assert config.seed == 20261110

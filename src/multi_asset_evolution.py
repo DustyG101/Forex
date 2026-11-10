@@ -19,7 +19,8 @@ import numpy as np
 import pandas as pd
 
 from .adaptive_gate import AdaptiveGate
-from .data_farm import FEATURE_NAMES, normalized_context_matrix
+from .context_features import FEATURE_NAMES, normalized_context_matrix
+from .evolution_multiscale import POPULATION, evolve_population
 
 PAIRS = ("EURUSD", "GBPUSD", "AUDUSD", "USDCAD")
 BASE_FEATURE_COUNT = 8
@@ -51,27 +52,15 @@ GATE_START = 18 + 2 * CONTEXT_COUNT
 
 @dataclass(frozen=True)
 class EvolutionConfig:
-    population_size: int = 24
+    """Solo parámetros de la corrida; población y operadores vienen del motor original."""
     generations: int = 20
-    elite_count: int = 6
     seed: int = 20261110
-    base_mutation_sigma: float = 0.05
-    context_mutation_sigma: float = 0.02
-    gate_mutation_sigma: float = 0.03
 
     def __post_init__(self):
-        if type(self.population_size) is not int or self.population_size < 6:
-            raise ValueError("population_size debe ser >= 6")
-        if type(self.generations) is not int or self.generations < 0:
-            raise ValueError("generations debe ser >= 0")
-        if type(self.elite_count) is not int or not 1 <= self.elite_count <= 6:
-            raise ValueError("elite_count debe estar entre 1 y 6")
-        if type(self.seed) is not int or self.seed < 0:
-            raise ValueError("seed debe ser entero no negativo")
-        for name in ("base_mutation_sigma", "context_mutation_sigma", "gate_mutation_sigma"):
-            value = getattr(self, name)
-            if not np.isfinite(value) or value < 0:
-                raise ValueError(f"{name} debe ser finito y no negativo")
+        if type(self.generations) is not int or not 1 <= self.generations <= 100:
+            raise ValueError("generations debe estar entre 1 y 100")
+        if type(self.seed) is not int or not 0 <= self.seed < 2**32:
+            raise ValueError("seed debe ser un entero entre 0 y 2**32-1")
 
 
 def _genome_digest(genome) -> str:
@@ -525,9 +514,11 @@ def multi_asset_fitness(pair_metrics: dict, kill_switch: dict | None = None):
 def _fitness_rank_value(fitness: dict) -> float:
     """Finite comparable rank value without serializing JSON Infinity."""
     if fitness.get("fitness_status") == "unbounded_infinite":
-        return math.inf
+        return 1e12
     value = fitness.get("fitness")
-    return -math.inf if value is None else float(value)
+    if value is None or not np.isfinite(value):
+        return -1e12
+    return float(np.clip(value, -1e12, 1e12))
 
 
 def _portfolio_returns(pair_results: dict):
@@ -605,36 +596,6 @@ def evaluate_multicurrency_genome(genome: np.ndarray, assets: dict):
     )
 
 
-def breed_generation(
-    population: np.ndarray, fitness_records: list[dict], config: EvolutionConfig,
-    rng: np.random.Generator,
-):
-    """Elites are copied unchanged; all other descendants use crossover + mutation."""
-    pop = np.asarray(population, dtype=np.float64)
-    if pop.ndim != 2 or pop.shape[1] != EXTENDED_GENOME_LENGTH or len(pop) != len(fitness_records):
-        raise ValueError("Población y fitness desalineados")
-    order = sorted(range(len(pop)), key=lambda i: (
-        bool(fitness_records[i]["fitness"]["eligible"]),
-        _fitness_rank_value(fitness_records[i]["fitness"]),
-    ), reverse=True)
-    elite_indices = order[:config.elite_count]
-    parent_count = max(2, min(len(order), max(config.elite_count, len(order) // 2)))
-    parents = pop[order[:parent_count]]
-    elites = pop[elite_indices].copy()
-    children = []
-    sigmas = np.full(EXTENDED_GENOME_LENGTH, config.base_mutation_sigma)
-    sigmas[ENTRY_CONTEXT] = config.context_mutation_sigma
-    sigmas[DIRECTION_CONTEXT] = config.context_mutation_sigma
-    sigmas[GATE_START:GATE_START + 4] = config.gate_mutation_sigma
-    while len(children) < config.population_size - len(elites):
-        i, j = rng.integers(0, len(parents), size=2)
-        weight = float(rng.uniform(0.25, 0.75))
-        child = weight * parents[i] + (1.0 - weight) * parents[j]
-        child = child + rng.normal(0.0, sigmas)
-        children.append(child)
-    return np.vstack((elites, np.stack(children))) if children else elites
-
-
 def _load_npz(path: Path):
     with np.load(path, allow_pickle=False) as data:
         return {key: data[key].copy() for key in data.files}
@@ -652,7 +613,7 @@ def _verify_context_feature_names(asset: dict, label: str):
     except (TypeError, json.JSONDecodeError) as exc:
         raise ValueError(f"{label}: context_feature_names inválido") from exc
     if tuple(names) != tuple(FEATURE_NAMES):
-        raise ValueError(f"{label}: orden/versión de features no coincide con Data Farm")
+        raise ValueError(f"{label}: orden/versión de features no coincide con context features")
 
 
 def _align_m15_to_m5(m5_decision_times_ns: np.ndarray, m15_decision_times_ns: np.ndarray):
@@ -675,10 +636,10 @@ def _align_m15_to_m5(m5_decision_times_ns: np.ndarray, m15_decision_times_ns: np
 
 
 def load_multicurrency_datasets(data_root: str | Path):
-    """Join Data Farm M5/M15 context to the existing PR44 eight-column base.
+    """Join context features M5/M15 context to the existing PR44 eight-column base.
 
     Layout:
-      DATA_ROOT/PPAIR/M5.npz       and M15.npz  (built by scripts.build_data_farm)
+      DATA_ROOT/PPAIR/M5.npz       and M15.npz  (built by scripts.build_context_features)
       DATA_ROOT/PPAIR/base_m5.npz  (canonical PR41/PR44 base features + volatility)
     base_m5.npz must contain decision_times_ns, timeframe (N x 8), volatility.
     No nearest-neighbour interpolation, forward-fill across gaps, or date edits.
@@ -709,10 +670,14 @@ def load_multicurrency_datasets(data_root: str | Path):
         c15 = np.asarray(m15["context_features"], dtype=np.float64)
         close_all = np.asarray(m5["close"], dtype=np.float64)
         if not np.array_equal(t5, tb):
-            raise ValueError(f"{pair}: la matriz base M5 no coincide exactamente con Data Farm M5")
+            raise ValueError(f"{pair}: la matriz base M5 no coincide exactamente con context features M5")
         if (t5.ndim != 1 or t15.ndim != 1 or len(t5) < 100 or len(t15) < 40
                 or np.any(np.diff(t5) <= 0) or np.any(np.diff(t15) <= 0)):
             raise ValueError(f"{pair}: timestamps insuficientes o no crecientes")
+        train_start_ns = pd.Timestamp("2026-01-01T00:00:00Z").value
+        train_end_ns = pd.Timestamp("2026-07-01T00:00:00Z").value
+        if t5[-1] > train_end_ns or t15[-1] > train_end_ns:
+            raise ValueError(f"{pair}: el conjunto contiene datos posteriores al IS H1 2026; Q3 no se carga")
         if (base_matrix_all.shape != (len(t5), BASE_FEATURE_COUNT)
                 or vol_all.shape != (len(t5),) or close_all.shape != (len(t5),)
                 or c5.shape != (len(t5), CONTEXT_PER_TIMEFRAME)
@@ -746,7 +711,11 @@ def load_multicurrency_datasets(data_root: str | Path):
         if len(t5) > 1:
             contiguous[:-1] = np.diff(t5) == step5
             outcomes[:-1][contiguous[:-1]] = np.sign(np.diff(close)[contiguous[:-1]]).astype(np.int8)
-        usable = contiguous
+        # Se conservan barras previas a enero para calcular indicadores causales,
+        # pero el evolucionador solo recibe decisiones de H1 2026 (Q1/Q2).
+        usable = contiguous & (t5 >= train_start_ns) & (t5 < train_end_ns)
+        if int(usable.sum()) < 100:
+            raise ValueError(f"{pair}: menos de 100 decisiones M5 dentro de H1 2026")
         tail = base.get("q2_eligible_volatility_tail")
         result[pair] = dict(
             decision_times_ns=t5[usable],
@@ -761,85 +730,139 @@ def load_multicurrency_datasets(data_root: str | Path):
     return result
 
 
+def _rank_values(fitness: dict):
+    """Orden de selección compartido por el lote y el campeón individual."""
+    status = fitness.get("min_profit_factor_status")
+    if status == "infinite_no_losses":
+        min_pf = 1e12
+    elif status == "finite" and fitness.get("min_profit_factor") is not None:
+        min_pf = float(fitness["min_profit_factor"])
+    else:
+        min_pf = -1e12
+    return (
+        bool(fitness["eligible"]),
+        _fitness_rank_value(fitness),
+        min_pf,
+        -float(fitness["max_drawdown_fraction"]),
+    )
+
+
+def _multi_asset_rank(values: dict):
+    return (
+        values["qualifies"],
+        values["score"],
+        values["min_profit_factor"],
+        values["negative_max_drawdown"],
+    )
+
+
+def _evaluate_population(population: np.ndarray, assets: dict):
+    """Evalúa cada genoma en los cuatro pares y devuelve vectores al motor original."""
+    ranked = [_rank_values(evaluate_multicurrency_genome(genome, assets)["fitness"])
+              for genome in population]
+    return dict(
+        qualifies=np.asarray([row[0] for row in ranked], dtype=bool),
+        score=np.asarray([row[1] for row in ranked], dtype=np.float64),
+        min_profit_factor=np.asarray([row[2] for row in ranked], dtype=np.float64),
+        negative_max_drawdown=np.asarray([row[3] for row in ranked], dtype=np.float64),
+    )
+
+
 def run_evolution(seed_manifest: str | Path, data_root: str | Path,
                   output_dir: str | Path, config: EvolutionConfig | None = None):
+    """Continúa los seis fundadores con el evolucionador original y fitness conjunto."""
     cfg = config or EvolutionConfig()
     seed_path = Path(seed_manifest)
     original, seed_metadata, _ = load_generation_zero(seed_path)
-    population = expand_generation_zero(original)
+    founders = expand_generation_zero(original)
     assets = load_multicurrency_datasets(data_root)
-    rng = np.random.default_rng(cfg.seed)
     output = Path(output_dir)
     output.mkdir(parents=True, exist_ok=True)
+
     report = dict(
-        protocol="PR45_MULTI_CURRENCY_GENETIC_RESEARCH_v1",
+        protocol="PR45_four_pair_context_inputs_on_original_evolution_v2",
         seed_manifest=str(seed_path),
         seed_manifest_sha256=sha256(seed_path.read_bytes()).hexdigest(),
-        generation_zero=[dict(meta, padded_context_weights="zero") for meta in seed_metadata],
-        config=cfg.__dict__,
-        generations=[],
+        generation_zero=[dict(meta, context_weights="zero_padded") for meta in seed_metadata],
+        config=dict(generations=cfg.generations, seed=cfg.seed, population=POPULATION),
+        evolution_operator="src.evolution_multiscale.evolve_population -> src.evolution_engine.seeded_population/breed",
+        pairs=list(PAIRS),
+        context_features=list(FEATURE_NAMES),
         fitness_definition="min(PF_pair) * (1 - max(DD_pair_fraction))",
-        fitness_infinite_pf_policy="PF=+infinity only when a pair has >=1 win and zero losses; no-trade/all-refund PF is undefined and disqualifies",
-        risk_model="four independent 1000 USD simulated accounts; 10 USD stake; 0.80 payout; 20% account DD; 2 fills/hour",
-        q3_usage="provenance and immutable generation-zero ancestry only; Q3 rows are not loaded as evolution data",
+        risk_model="four isolated simulated accounts; per-pair stake, payout, 20% account stop and 2 trades/hour",
+        training_period="[2026-01-01T00:00:00Z, 2026-07-01T00:00:00Z)",
+        q3_loaded=False,
+        seed_runs=[],
     )
 
-    for generation in range(cfg.generations + 1):
-        records = []
-        ledgers = []
-        for genome in population:
-            evaluated = evaluate_multicurrency_genome(genome, assets)
-            records.append(evaluated)
-            ledgers.append(evaluated["ledgers"])
-
-        rng_state = json.dumps(rng.bit_generator.state, sort_keys=True)
-        individuals = []
-        for i, (genome, record) in enumerate(zip(population, records, strict=True)):
-            individuals.append(dict(
-                individual=i,
-                genome_sha256=_genome_digest(genome),
-                source_seed_id=seed_metadata[i]["id"] if generation == 0 and i < len(seed_metadata) else None,
-                fitness=record["fitness"],
-                pair_metrics=record["pair_metrics"],
-            ))
-
-        summary = dict(
-            generation=generation,
-            population_size=len(population),
-            individuals=individuals,
-            rng_state_before_next_breeding=rng_state,
+    for index, (founder, metadata) in enumerate(zip(founders, seed_metadata, strict=True)):
+        run_seed = (cfg.seed + index * 1009) % (2**32)
+        evolve = evolve_population(
+            lambda population: _evaluate_population(population, assets),
+            founder.copy(),
+            f"pr45_{metadata['id']}_four_pair",
+            run_seed,
+            first_generation=1,
+            last_generation=cfg.generations,
+            ranking=_multi_asset_rank,
         )
-        report["generations"].append(summary)
+        genome = np.asarray(evolve["genome"], dtype="<f8")
+        if genome.shape != (EXTENDED_GENOME_LENGTH,) or not np.isfinite(genome).all():
+            raise ValueError(f"{metadata['id']}: el motor original devolvió un genoma inválido")
 
-        # A restart can restore both the exact matrix and PRNG state without
-        # depending on temporary runner memory or recomputing earlier generations.
-        checkpoint_path = output / f"generation-{generation:03d}-checkpoint.npz"
+        winner = evaluate_multicurrency_genome(genome, assets)
+        rank = _rank_values(winner["fitness"])
+        selected = _multi_asset_rank(evolve["champion"])
+        if (rank[0] != bool(selected[0]) or
+                not np.allclose(np.asarray(rank[1:], dtype=float),
+                                np.asarray(selected[1:], dtype=float), atol=1e-10, rtol=0)):
+            raise ValueError(f"{metadata['id']}: el campeón no reproduce su fitness conjunto")
+
+        ledger_paths = {}
+        for pair, trades in winner["ledgers"].items():
+            ledger_path = output / f"{metadata['id']}-{pair.lower()}-ledger.json"
+            ledger_path.write_text(
+                json.dumps(trades, indent=2, allow_nan=False) + "\n", encoding="utf-8"
+            )
+            ledger_paths[pair] = str(ledger_path)
+
+        genome_path = output / f"{metadata['id']}-genome.npz"
         np.savez_compressed(
-            checkpoint_path,
-            generation=np.asarray(generation, dtype=np.int64),
-            genomes=population.astype("<f8", copy=True),
-            genome_sha256=np.asarray([_genome_digest(g) for g in population]),
-            rng_state=np.asarray(rng_state),
+            genome_path,
+            genome=genome,
+            source_genome=np.asarray(founder, dtype="<f8"),
+            source_id=np.asarray(metadata["id"]),
         )
+        seed_run = dict(
+            source_seed_id=metadata["id"],
+            source_pair=metadata["origin_pair"],
+            source_genome_sha256=metadata["genome_sha256"],
+            expanded_founder_sha256=_genome_digest(founder),
+            evolved_genome_sha256=_genome_digest(genome),
+            evolved_genome=genome.tolist(),
+            champion_generation=int(evolve["champion"]["generation"]),
+            population=POPULATION,
+            generations=cfg.generations,
+            evaluations=int(evolve["evaluations"]),
+            rank=dict(
+                qualifies=rank[0],
+                score=rank[1],
+                min_profit_factor=rank[2],
+                negative_max_drawdown=rank[3],
+            ),
+            fitness=winner["fitness"],
+            pair_metrics=winner["pair_metrics"],
+            generation_history=evolve["generations"],
+            genome_artifact=str(genome_path),
+            ledger_artifacts=ledger_paths,
+        )
+        report["seed_runs"].append(seed_run)
 
-        for i, ledger_by_pair in enumerate(ledgers):
-            for pair, trades in ledger_by_pair.items():
-                path = output / f"generation-{generation:03d}-individual-{i:03d}-{pair}.json"
-                path.write_text(json.dumps(trades, indent=2, allow_nan=False) + "\n", encoding="utf-8")
-
-        if generation < cfg.generations:
-            population = breed_generation(population, records, cfg, rng)
-
-    final_records = report["generations"][-1]["individuals"]
-    best = max(final_records, key=lambda row: (
-        bool(row["fitness"]["eligible"]), _fitness_rank_value(row["fitness"])
-    ))
-    report["best_final_individual"] = best["individual"]
+    best = max(report["seed_runs"], key=lambda row: _multi_asset_rank(row["rank"]))
+    report["best_final_seed_id"] = best["source_seed_id"]
     report["best_final_fitness"] = best["fitness"]
     report_path = output / "evolution-report.json"
     report_path.write_text(json.dumps(report, indent=2, allow_nan=False) + "\n", encoding="utf-8")
-    best_genome = population[best["individual"]]
-    np.savez_compressed(output / "best-final-genome.npz", genome=best_genome)
     return report
 
 
@@ -849,18 +872,13 @@ def main():
                         default=Path("research/multi_currency/generation_0_seeds.json"))
     parser.add_argument("--data-root", type=Path, required=True)
     parser.add_argument("--output", type=Path, default=Path("reports/multi_currency"))
-    parser.add_argument("--population-size", type=int, default=24)
     parser.add_argument("--generations", type=int, default=20)
-    parser.add_argument("--elite-count", type=int, default=6)
     parser.add_argument("--seed", type=int, default=20261110)
     args = parser.parse_args()
-    cfg = EvolutionConfig(
-        population_size=args.population_size,
-        generations=args.generations,
-        elite_count=args.elite_count,
-        seed=args.seed,
+    run_evolution(
+        args.seed_manifest, args.data_root, args.output,
+        EvolutionConfig(generations=args.generations, seed=args.seed),
     )
-    run_evolution(args.seed_manifest, args.data_root, args.output, cfg)
 
 
 if __name__ == "__main__":

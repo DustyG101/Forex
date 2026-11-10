@@ -1,4 +1,4 @@
-name: PR45 — Multi-currency source validation only
+name: PR45 — Original engine and context validation
 
 on:
   workflow_dispatch:
@@ -6,9 +6,9 @@ on:
     branches:
       - codex/forex-multi-currency-evolution
     paths:
-      - 'src/data_farm.py'
+      - 'src/context_features.py'
       - 'src/multi_asset_evolution.py'
-      - 'scripts/build_data_farm.py'
+      - 'scripts/build_context_features.py'
       - 'tests/test_pr45_multi_currency.py'
       - 'research/multi_currency/generation_0_seeds.json'
       - '.github/workflows/pr45-multi-currency-validation.yml'
@@ -32,7 +32,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - name: Checkout experimental PR45 branch
+      - name: Checkout PR45 branch
         uses: actions/checkout@v6
         with:
           persist-credentials: false
@@ -48,7 +48,7 @@ jobs:
         run: python -m compileall -q src scripts tests
       - name: Run PR45 synthetic causality, seed, fitness and risk tests
         run: python -m pytest -q tests/test_pr45_multi_currency.py
-      - name: Confirm this workflow did not launch any evolution
+      - name: Confirm this workflow did not launch training
         run: |
-          echo "Validation-only run: no market data download, no replay, no training, no mutation, no genetic evolution."
+          echo "Validation-only run: no market data download, no replay, no training or genetic evolution."
           echo "Generation 0 remains an immutable source manifest."

@@ -24,7 +24,7 @@ FEATURE_NAMES = (
 )
 
 # Fixed scales are a unit conversion, not a fitted normalizer. Raw pips stay
-# available in the Data Farm output; the genetic input uses bounded values.
+# available in the market context output; the genetic input uses bounded values.
 FEATURE_SCALES = {
     name: 50.0 for name in (
         "fvg_bull_distance_pips", "fvg_bear_distance_pips",
@@ -39,7 +39,7 @@ FEATURE_SCALES.update({
 
 
 @dataclass(frozen=True)
-class DataFarmConfig:
+class ContextConfig:
     pip_size: float = 0.0001
     fvg_max_age_bars: int = 500
     ob_max_age_bars: int = 96
@@ -80,7 +80,7 @@ class DataFarmConfig:
 
 def _bar_minutes(timeframe: str) -> int:
     if timeframe not in ("M5", "M15"):
-        raise ValueError("La Data Farm solo acepta M5 o M15")
+        raise ValueError("La market context solo acepta M5 o M15")
     return 5 if timeframe == "M5" else 15
 
 
@@ -133,7 +133,7 @@ def _nearest_zone(zones, price, pip):
             (chosen[1] - chosen[0]) / pip, 1.0)
 
 
-def _session(hour: int, cfg: DataFarmConfig):
+def _session(hour: int, cfg: ContextConfig):
     if cfg.asia_start_hour_utc <= hour < cfg.asia_end_hour_utc:
         return "asia"
     if cfg.london_start_hour_utc <= hour < cfg.london_end_hour_utc:
@@ -144,7 +144,7 @@ def _session(hour: int, cfg: DataFarmConfig):
 
 
 def build_micro_event_features(
-    frame: pd.DataFrame, *, timeframe: str, config: DataFarmConfig | None = None,
+    frame: pd.DataFrame, *, timeframe: str, config: ContextConfig | None = None,
 ) -> pd.DataFrame:
     """Build 21 causal context features aligned to the input bar-open timestamps.
 
@@ -153,7 +153,7 @@ def build_micro_event_features(
     a close back through it; MSS is HH+HL / LH+LL using confirmed pivots only.
     Missing reference levels are encoded as zero distance + zero presence/flag.
     """
-    cfg = config or DataFarmConfig()
+    cfg = config or ContextConfig()
     bars = validate_ohlcv(frame, timeframe)
     step = pd.Timedelta(minutes=_bar_minutes(timeframe))
     ts = pd.DatetimeIndex(bars.timestamp)
@@ -331,7 +331,7 @@ def build_micro_event_features(
         causal=True,
     )
     if not np.isfinite(result[list(FEATURE_NAMES)].to_numpy()).all():
-        raise ValueError("La Data Farm produjo features no finitas")
+        raise ValueError("La market context produjo features no finitas")
     return result
 
 

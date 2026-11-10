@@ -1,4 +1,4 @@
-"""Build immutable Data Farm M5/M15 context arrays from local OHLCV CSVs.
+"""Build immutable market-context M5/M15 context arrays from local OHLCV CSVs.
 
 Accepted input layout: INPUT_ROOT/PAIR/M1.csv, or PAIR/M5.csv + PAIR/M15.csv.
 CSV columns: timestamp,open,high,low,close[,volume]; timestamps are UTC bar
@@ -15,8 +15,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from src.data_farm import (
-    DataFarmConfig, FEATURE_NAMES, FEATURE_SCALES,
+from src.context_features import (
+    ContextConfig, FEATURE_NAMES, FEATURE_SCALES,
     build_micro_event_features, validate_ohlcv,
 )
 
@@ -84,7 +84,7 @@ def aggregate_m1(frame: pd.DataFrame, minutes: int) -> pd.DataFrame:
 
 
 def save_asset(frame: pd.DataFrame, *, pair: str, timeframe: str,
-               output_path: Path, config: DataFarmConfig, source_path: Path):
+               output_path: Path, config: ContextConfig, source_path: Path):
     context = build_micro_event_features(frame, timeframe=timeframe, config=config)
     minutes = 5 if timeframe == "M5" else 15
     raw_open_ns = pd.DatetimeIndex(context.timestamp).asi8.astype(np.int64)
@@ -118,12 +118,12 @@ def save_asset(frame: pd.DataFrame, *, pair: str, timeframe: str,
     )
 
 
-def build_data_farm(input_root: Path, output_root: Path, pairs=(
+def build_context_features(input_root: Path, output_root: Path, pairs=(
     "EURUSD", "GBPUSD", "AUDUSD", "USDCAD"
-), config: DataFarmConfig | None = None):
-    cfg = config or DataFarmConfig()
+), config: ContextConfig | None = None):
+    cfg = config or ContextConfig()
     report = dict(
-        schema="FOREX_DATA_FARM_CONTEXT_v1",
+        schema="FOREX_CONTEXT_FEATURES_v1",
         causal=True,
         no_trade_gates=True,
         no_model_fit=True,
@@ -169,13 +169,13 @@ def build_data_farm(input_root: Path, output_root: Path, pairs=(
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input-root", type=Path, required=True)
-    parser.add_argument("--output-root", type=Path, default=Path("data/data_farm"))
+    parser.add_argument("--output-root", type=Path, default=Path("data/context_features"))
     parser.add_argument("--pairs", nargs="+", default=["EURUSD", "GBPUSD", "AUDUSD", "USDCAD"],
                         choices=["EURUSD", "GBPUSD", "AUDUSD", "USDCAD"])
     parser.add_argument("--pip-size", type=float, default=0.0001)
     args = parser.parse_args()
-    config = DataFarmConfig(pip_size=args.pip_size)
-    report = build_data_farm(args.input_root, args.output_root, args.pairs, config)
+    config = ContextConfig(pip_size=args.pip_size)
+    report = build_context_features(args.input_root, args.output_root, args.pairs, config)
     print(json.dumps({
         "assets": len(report["assets"]),
         "rows": {f"{item['pair']}_{item['timeframe']}": item["rows"] for item in report["assets"]},
