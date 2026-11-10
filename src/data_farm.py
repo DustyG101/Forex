@@ -168,7 +168,8 @@ def build_micro_event_features(
 
     # Causal ATR proxy for OB displacement. A gap breaks its rolling warmup.
     prev_close = np.r_[np.nan, cl[:-1]]
-    prev_close[1:][~consecutive[1:]] = np.nan
+    broken_rows = np.flatnonzero(~consecutive[1:]) + 1
+    prev_close[broken_rows] = np.nan
     true_range = np.maximum.reduce((hi - lo, np.abs(hi - prev_close), np.abs(lo - prev_close)))
     atr = pd.Series(true_range).rolling(cfg.ob_atr_period, min_periods=cfg.ob_atr_period).mean().to_numpy()
 
