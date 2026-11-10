@@ -90,10 +90,10 @@ def test_generation_zero_is_exactly_the_six_verified_pr44_pass_genomes():
 
 def test_multi_asset_fitness_uses_minimum_pf_and_maximum_drawdown():
     metrics = {
-        "EURUSD": dict(profit_factor=1.50, max_drawdown_fraction=0.10, trades=50, account_stop=False),
-        "GBPUSD": dict(profit_factor=1.80, max_drawdown_fraction=0.05, trades=40, account_stop=False),
-        "AUDUSD": dict(profit_factor=1.20, max_drawdown_fraction=0.12, trades=60, account_stop=False),
-        "USDCAD": dict(profit_factor=1.70, max_drawdown_fraction=0.08, trades=45, account_stop=False),
+        "EURUSD": dict(profit_factor=1.50, profit_factor_status="finite", max_drawdown_fraction=0.10, trades=50, account_stop=False),
+        "GBPUSD": dict(profit_factor=1.80, profit_factor_status="finite", max_drawdown_fraction=0.05, trades=40, account_stop=False),
+        "AUDUSD": dict(profit_factor=1.20, profit_factor_status="finite", max_drawdown_fraction=0.12, trades=60, account_stop=False),
+        "USDCAD": dict(profit_factor=1.70, profit_factor_status="finite", max_drawdown_fraction=0.08, trades=45, account_stop=False),
     }
     result = multi_asset_fitness(metrics)
     assert result["fitness"] == 1.20 * (1.0 - 0.12)
