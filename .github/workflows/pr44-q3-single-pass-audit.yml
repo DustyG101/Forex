@@ -58,29 +58,20 @@ jobs:
             test -s "$dir/manifest.json"
           done
 
-      - name: Retrieve the 24 original PR41 and PR43 artifacts into reports/
-        env:
-          ORIGINAL_REPO_READ_TOKEN: ${{ secrets.ORIGINAL_REPO_READ_TOKEN }}
+      - name: Retrieve the 24 public PR41 and PR43 artifacts into reports (anonymous API)
         run: |
           set -euo pipefail
-          if [[ -z "${ORIGINAL_REPO_READ_TOKEN:-}" ]]; then
-            echo "::error::BLOCKED: GitHub Actions artifact ZIP downloads require ORIGINAL_REPO_READ_TOKEN with actions:read access to Asriel550/Forex. The artifact listing is public, but GitHub's ZIP download endpoint is permission-protected."
-            exit 1
-          fi
           api="https://api.github.com/repos/Asriel550/Forex"
           mkdir -p reports/pr44-control-models reports/pr44-evolved-models
           for PAIR in EURUSD GBPUSD AUDUSD USDCAD; do
-            slug="$(echo "$PAIR" | tr '[:upper:]' '[:lower:]')"
             for SEED in 42 43 44; do
               name="pr41-native-$PAIR-seed-$SEED"
               id="$(curl --fail --silent --show-error \
-                -H "Authorization: Bearer $ORIGINAL_REPO_READ_TOKEN" \
                 -H "Accept: application/vnd.github+json" \
                 "$api/actions/runs/42576852134/artifacts?per_page=100" \
                 | jq -er --arg name "$name" '[.artifacts[] | select(.name == $name and .expired == false)] | if length == 1 then .[0].id else error("expected exactly one non-expired artifact: " + $name) end')"
               zip="$(mktemp)"
               curl --fail --location --silent --show-error \
-                -H "Authorization: Bearer $ORIGINAL_REPO_READ_TOKEN" \
                 -H "Accept: application/vnd.github+json" \
                 "$api/actions/artifacts/$id/zip" -o "$zip"
               unzip -q "$zip" -d reports/pr44-control-models
@@ -88,13 +79,11 @@ jobs:
 
               name="pr43-continued-$PAIR-seed-$SEED"
               id="$(curl --fail --silent --show-error \
-                -H "Authorization: Bearer $ORIGINAL_REPO_READ_TOKEN" \
                 -H "Accept: application/vnd.github+json" \
                 "$api/actions/runs/42647437793/artifacts?per_page=100" \
                 | jq -er --arg name "$name" '[.artifacts[] | select(.name == $name and .expired == false)] | if length == 1 then .[0].id else error("expected exactly one non-expired artifact: " + $name) end')"
               zip="$(mktemp)"
               curl --fail --location --silent --show-error \
-                -H "Authorization: Bearer $ORIGINAL_REPO_READ_TOKEN" \
                 -H "Accept: application/vnd.github+json" \
                 "$api/actions/artifacts/$id/zip" -o "$zip"
               unzip -q "$zip" -d reports/pr44-evolved-models
