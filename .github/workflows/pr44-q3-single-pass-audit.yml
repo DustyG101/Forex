@@ -31,17 +31,22 @@ jobs:
       - name: Zero-compute Q3 source readiness gate (BEFORE any pip installs)
         env:
           GH_TOKEN: ${{ github.token }}
+          ORIGINAL_REPO_READ_TOKEN: ${{ secrets.ORIGINAL_REPO_READ_TOKEN }}
         run: |
           set -euo pipefail
+          if [[ -z "${ORIGINAL_REPO_READ_TOKEN:-}" ]]; then
+            echo "::error::BLOCKED: Add repository secret ORIGINAL_REPO_READ_TOKEN with actions:read access to Asriel550/Forex."
+            exit 1
+          fi
           for PAIR in EURUSD GBPUSD AUDUSD USDCAD; do
             slug="$(echo "$PAIR" | tr '[:upper:]' '[:lower:]')"
             tag="data-pr44-q3-${slug}-m5-m15-garch-universe-2026q3-v1"
-            if ! gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            if ! gh release view "$tag" --repo Asriel550/Forex >/dev/null 2>&1; then
               echo "::error::BLOCKED: Missing independently certified Q3 M5/M15/GARCH release for $PAIR: $tag"
               exit 1
             fi
             for asset in universe.npz manifest.json; do
-              if ! gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json assets \
+              if ! gh release view "$tag" --repo Asriel550/Forex --json assets \
                   --jq '.assets[].name' | grep -Fxq "$asset"; then
                 echo "::error::BLOCKED: Q3 $PAIR release missing $asset"
                 exit 1
@@ -66,14 +71,16 @@ jobs:
         with:
           pattern: pr41-native-*
           run-id: 42576852134
-          github-token: ${{ github.token }}
+          repository: Asriel550/Forex
+          github-token: ${{ secrets.ORIGINAL_REPO_READ_TOKEN }}
           path: reports/pr44-control-models
       - name: Retrieve 12 evolved models from completed PR43 (no new evolution)
         uses: actions/download-artifact@v8
         with:
           pattern: pr43-continued-*
           run-id: 42647437793
-          github-token: ${{ github.token }}
+          repository: Asriel550/Forex
+          github-token: ${{ secrets.ORIGINAL_REPO_READ_TOKEN }}
           path: reports/pr44-evolved-models
       - name: Download four already-certified Q3 inference universes ONCE
         env:
@@ -85,7 +92,7 @@ jobs:
             dir="reports/pr44-q3-native/$slug"
             mkdir -p "$dir"
             gh release download "data-pr44-q3-${slug}-m5-m15-garch-universe-2026q3-v1" \
-              --repo "$GITHUB_REPOSITORY" --pattern universe.npz \
+              --repo Asriel550/Forex --pattern universe.npz \
               --pattern manifest.json --dir "$dir" --clobber
           done
       - name: One-shot OOS read-only replay, 24 frozen genomes, 4 isolated account ledgers
