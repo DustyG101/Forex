@@ -42,7 +42,7 @@ def aggregate_m1(frame: pd.DataFrame, minutes: int) -> pd.DataFrame:
     """OHLC aggregation from exact consecutive M1 opens; incomplete bins vanish."""
     if minutes not in (5, 15):
         raise ValueError("Solo se agregan barras M5/M15")
-    source = validate_ohlcv(frame, "M5") if False else frame.copy()
+    source = frame.copy()
     required = {"timestamp", "open", "high", "low", "close"}
     if not required.issubset(source.columns):
         raise ValueError(f"M1 requiere columnas {sorted(required)}")
@@ -58,8 +58,11 @@ def aggregate_m1(frame: pd.DataFrame, minutes: int) -> pd.DataFrame:
         raise ValueError("M1 no está alineado al minuto UTC")
     if not np.isfinite(source[["open", "high", "low", "close", "volume"]].to_numpy()).all():
         raise ValueError("M1 contiene nulos o infinitos")
-    if (source[["open", "high", "low", "close"]] <= 0).any().any() or (source.volume < 0).any():
+    prices = source[["open", "high", "low", "close"]]
+    if (prices <= 0).any().any() or (source.volume < 0).any():
         raise ValueError("M1 OHLCV inválido")
+    if (source.high < prices.max(axis=1)).any() or (source.low > prices.min(axis=1)).any():
+        raise ValueError("M1 OHLC incoherente")
 
     source["bucket"] = source.timestamp.dt.floor(f"{minutes}min")
     rows = []
@@ -139,7 +142,7 @@ def build_data_farm(input_root: Path, output_root: Path, pairs=(
         if m1.exists():
             source = read_ohlcv(m1)
             frames = {"M5": aggregate_m1(source, 5), "M15": aggregate_m1(source, 15)}
-            source_path = m1
+            source_paths = {"M5": m1, "M15": m1}
         else:
             m5_path, m15_path = folder / "M5.csv", folder / "M15.csv"
             if not m5_path.exists() or not m15_path.exists():
@@ -150,13 +153,12 @@ def build_data_farm(input_root: Path, output_root: Path, pairs=(
                 "M5": validate_ohlcv(read_ohlcv(m5_path), "M5"),
                 "M15": validate_ohlcv(read_ohlcv(m15_path), "M15"),
             }
-            # Record both exact source hashes when separate timeframe files are used.
-            source_path = m5_path
+            source_paths = {"M5": m5_path, "M15": m15_path}
         for timeframe, frame in frames.items():
             path = output_root / pair / f"{timeframe}.npz"
             report["assets"].append(save_asset(
                 frame, pair=pair, timeframe=timeframe,
-                output_path=path, config=cfg, source_path=source_path,
+                output_path=path, config=cfg, source_path=source_paths[timeframe],
             ))
     output_root.mkdir(parents=True, exist_ok=True)
     manifest = output_root / "manifest.json"
