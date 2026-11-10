@@ -1,0 +1,54 @@
+name: PR45 — Multi-currency source validation only
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - codex/forex-multi-currency-evolution
+    paths:
+      - 'src/data_farm.py'
+      - 'src/multi_asset_evolution.py'
+      - 'scripts/build_data_farm.py'
+      - 'tests/test_pr45_multi_currency.py'
+      - 'research/multi_currency/generation_0_seeds.json'
+      - '.github/workflows/pr45-multi-currency-validation.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr45-multi-currency-validation
+  cancel-in-progress: false
+
+env:
+  PYTHONHASHSEED: '0'
+  OPENBLAS_NUM_THREADS: '1'
+  OMP_NUM_THREADS: '1'
+  MKL_NUM_THREADS: '1'
+
+jobs:
+  source-and-synthetic-tests:
+    name: Compile source and run synthetic PR45 tests (no market data, no evolution)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout experimental PR45 branch
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: Install lightweight test dependencies only
+        run: |
+          python -m pip install --disable-pip-version-check \
+            'numpy>=1.26.4,<2.4' 'pandas>=2.2.3,<3' 'pytest>=8.3,<10'
+      - name: Compile all Python source
+        run: python -m compileall -q src scripts tests
+      - name: Run PR45 synthetic causality, seed, fitness and risk tests
+        run: python -m pytest -q tests/test_pr45_multi_currency.py
+      - name: Confirm this workflow did not launch any evolution
+        run: |
+          echo "Validation-only run: no market data download, no replay, no training, no mutation, no genetic evolution."
+          echo "Generation 0 remains an immutable source manifest."
