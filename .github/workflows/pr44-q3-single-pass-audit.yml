@@ -13,6 +13,7 @@ on:
       - codex/forex-pr44-q3-single-pass-oos
     paths:
       - 'research/triggers/pr44-q3-final-audit-v*.txt'
+      - '.github/workflows/pr44-q3-single-pass-audit.yml'
 
 permissions:
   contents: read
@@ -148,17 +149,17 @@ jobs:
           assert d['model_selection_performed'] is False and d['oos_first_pass'] is True
           assert len(d['results'])==24
           with Path(os.environ['GITHUB_STEP_SUMMARY']).open('a') as f:
-            f.write('## PR44 frozen-model Q3 2026 OOS, no model selection or refits\\n\\n')
-            f.write(f"**Passing: {d['passes']} / 24** — complete July–September, independent accounts.\\n\\n")
-            f.write('| Group | Pair | Seed | PF Q3 | DD Q3 | Degradation H1 | Trades | Verdict |\\n')
-            f.write('| --- | --- | ---: | ---: | ---: | ---: | ---: | --- |\\n')
+            f.write('## PR44 frozen-model Q3 2026 OOS, no model selection or refits\n\n')
+            f.write(f"**Passing: {d['passes']} / 24** — complete July–September, independent accounts.\n\n")
+            f.write('| Group | Pair | Seed | PF Q3 | DD Q3 | Degradation H1 | Trades | Verdict |\n')
+            f.write('| --- | --- | ---: | ---: | ---: | ---: | ---: | --- |\n')
             for r in d['results']:
               pf='Undefined' if r['pf_q3'] is None else f"{r['pf_q3']:.3f}"
               deg='Undefined' if r['degradation_pct'] is None else f"{r['degradation_pct']:.1f}%"
               f.write(f"| {r['group']} | {r['symbol']} | {r['seed']} | {pf} | "
                       f"{r['dd_q3_pct']:.2f}% | {deg} | {r['executed_q3']} | "
-                      f"{'PASS' if r['qualifies'] else 'FAIL'} |\\n")
-            f.write('\\n**All 24 models evaluated**. No optimization, promotion or retrospective model picking.\\n')
+                      f"{'PASS' if r['qualifies'] else 'FAIL'} |\n")
+            f.write('\n**All 24 models evaluated**. No optimization, promotion or retrospective model picking.\n')
           PY
       - uses: actions/upload-artifact@v7
         if: inputs.run_audit == true
