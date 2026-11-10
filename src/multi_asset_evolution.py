@@ -704,8 +704,11 @@ def load_multicurrency_datasets(data_root: str | Path):
             raise ValueError(f"{pair}: timestamp M15 no corresponde a su cierre")
         # At each M5 decision, use only a recently closed M15 candle.
         idx15 = np.searchsorted(t15, t5, side="right") - 1
-        valid = (idx15 >= 0)
-        valid[valid] &= (t5[valid] - t15[idx15[valid]]) <= step15
+        valid = idx15 >= 0
+        valid_indices = np.flatnonzero(valid)
+        valid[valid_indices] = (
+            t5[valid_indices] - t15[idx15[valid_indices]] <= step15
+        )
         if valid.sum() < 100:
             raise ValueError(f"{pair}: cobertura M15 cerrada y reciente insuficiente para alinear M5")
         t5 = t5[valid]
