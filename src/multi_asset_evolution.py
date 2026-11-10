@@ -358,51 +358,109 @@ def _evaluate_pair(genome, data: dict, pair: str, *, portfolio_stop_time_ns: int
                 decision_times_ns=times.asi8.copy())
 
 
-def portfolio_kill_switch(
-    returns_matrix: np.ndarray, *, drawdown_limit: float = 0.15,
-    correlation_drawdown_trigger: float = 0.08, loss_correlation_limit: float = 0.85,
-    correlation_window: int = 96, min_observations: int = 24,
-):
-    """Monitor equal-risk combined equity and correlation of simultaneous losses.
+def _max_pairwise_loss_correlation(window: np.ndarray) -> float | None:
+    """Correlation of simultaneous downside returns; constant pairs are ignored."""
+    losses = np.minimum(np.asarray(window, dtype=np.float64), 0.0)
+    if losses.ndim != 2 or losses.shape[1] != 4:
+        raise ValueError("La correlación requiere cuatro series de pares")
+    corr = np.corrcoef(losses, rowvar=False)
+    upper = corr[np.triu_indices(4, k=1)]
+    finite = upper[np.isfinite(upper)]
+    return float(np.max(finite)) if len(finite) else None
 
-    Correlation alone does not stop the portfolio. It is a kill condition only
-    when paired with a material combined drawdown; the hard combined DD limit
-    independently stops the portfolio.
+
+def portfolio_kill_switch(
+    returns_matrix: np.ndarray, *, event_times_ns: np.ndarray | None = None,
+    drawdown_limit: float = 0.15,
+    correlation_drawdown_trigger: float = 0.08,
+    loss_correlation_limit: float = 0.85,
+    correlation_window: int = 96,
+    min_observations: int = 24,
+):
+    """Find the FIRST combined-risk stop on synchronized four-pair equity.
+
+    Each row is one settlement timestamp; missing pair activity is a zero
+    return because each account is independently held in cash otherwise.
+    Correlation is the rolling correlation of downside returns, a measurable
+    proxy for synchronized drawdown pressure. Correlation alone never stops:
+    it must coincide with the configured combined portfolio drawdown.
     """
     values = np.asarray(returns_matrix, dtype=np.float64)
     if values.ndim != 2 or values.shape[1] != 4 or not np.isfinite(values).all():
         raise ValueError("El kill-switch requiere retornos finitos T x 4")
+    if not (0 < drawdown_limit <= 1 and 0 <= correlation_drawdown_trigger <= drawdown_limit
+            and -1 <= loss_correlation_limit <= 1 and correlation_window >= 2
+            and min_observations >= 2):
+        raise ValueError("Umbrales del kill-switch inválidos")
+    event_times = None
+    if event_times_ns is not None:
+        event_times = np.asarray(event_times_ns, dtype=np.int64)
+        if (event_times.shape != (len(values),) or
+                (len(event_times) > 1 and np.any(np.diff(event_times) <= 0))):
+            raise ValueError("Tiempos del portafolio desalineados")
     if len(values) == 0:
         return dict(triggered=False, reason="no_observations", combined_drawdown=0.0,
-                    max_loss_correlation=None, observations=0)
+                    max_loss_correlation=None, observations=0, trigger_index=None,
+                    triggered_at_ns=None, thresholds=dict(
+                        drawdown_limit=drawdown_limit,
+                        correlation_drawdown_trigger=correlation_drawdown_trigger,
+                        loss_correlation_limit=loss_correlation_limit,
+                        correlation_window=correlation_window,
+                        min_observations=min_observations,
+                    ))
+
     combined = np.mean(values, axis=1)
-    if (combined <= -1.0).any():
-        combined = np.maximum(combined, -0.999999)
+    combined = np.maximum(combined, -0.999999)
     equity = np.cumprod(1.0 + combined)
     peaks = np.maximum.accumulate(equity)
-    dd = float(np.max(1.0 - equity / peaks))
-    window = values[-correlation_window:]
-    max_corr = None
-    if len(window) >= min_observations:
-        losses = np.minimum(window, 0.0)
-        corr = np.corrcoef(losses, rowvar=False)
-        if corr.shape == (4, 4):
-            upper = corr[np.triu_indices(4, k=1)]
-            finite = upper[np.isfinite(upper)]
-            if len(finite):
-                max_corr = float(np.max(finite))
-    hard_stop = dd >= drawdown_limit
-    correlated_stop = (max_corr is not None and max_corr >= loss_correlation_limit
-                       and dd >= correlation_drawdown_trigger)
-    triggered = bool(hard_stop or correlated_stop)
-    reason = ("combined_drawdown_limit" if hard_stop else
-              "correlated_losses_with_drawdown" if correlated_stop else None)
-    return dict(triggered=triggered, reason=reason, combined_drawdown=dd,
-                max_loss_correlation=max_corr, observations=len(values),
-                thresholds=dict(drawdown_limit=drawdown_limit,
-                                correlation_drawdown_trigger=correlation_drawdown_trigger,
-                                loss_correlation_limit=loss_correlation_limit,
-                                correlation_window=correlation_window))
+    drawdowns = 1.0 - equity / peaks
+    max_dd = float(np.max(drawdowns))
+    trigger_index = None
+    trigger_reason = None
+    max_corr_seen = None
+
+    for i in range(len(values)):
+        if drawdowns[i] >= drawdown_limit:
+            trigger_index = i
+            trigger_reason = "combined_drawdown_limit"
+            break
+        begin = max(0, i - correlation_window + 1)
+        window = values[begin:i + 1]
+        if len(window) >= min_observations:
+            corr = _max_pairwise_loss_correlation(window)
+            if corr is not None:
+                max_corr_seen = corr if max_corr_seen is None else max(max_corr_seen, corr)
+            if (corr is not None and corr >= loss_correlation_limit and
+                    drawdowns[i] >= correlation_drawdown_trigger):
+                trigger_index = i
+                trigger_reason = "correlated_losses_with_drawdown"
+                break
+
+    if max_corr_seen is None:
+        begin = max(0, len(values) - correlation_window)
+        tail_corr = _max_pairwise_loss_correlation(values[begin:])
+        max_corr_seen = tail_corr
+
+    triggered_at_ns = (
+        int(event_times[trigger_index])
+        if trigger_index is not None and event_times is not None else None
+    )
+    return dict(
+        triggered=trigger_index is not None,
+        reason=trigger_reason,
+        combined_drawdown=max_dd,
+        max_loss_correlation=max_corr_seen,
+        observations=len(values),
+        trigger_index=trigger_index,
+        triggered_at_ns=triggered_at_ns,
+        thresholds=dict(
+            drawdown_limit=drawdown_limit,
+            correlation_drawdown_trigger=correlation_drawdown_trigger,
+            loss_correlation_limit=loss_correlation_limit,
+            correlation_window=correlation_window,
+            min_observations=min_observations,
+        ),
+    )
 
 
 def multi_asset_fitness(pair_metrics: dict, kill_switch: dict | None = None):
@@ -475,21 +533,71 @@ def _portfolio_returns(pair_results: dict):
     for j, pair in enumerate(PAIRS):
         for stamp, value in pair_results[pair]["step_returns"].items():
             matrix[positions[stamp], j] = value
-    return matrix
+    return matrix, np.asarray(events, dtype=np.int64)
 
 
 def evaluate_multicurrency_genome(genome: np.ndarray, assets: dict):
-    """Evaluate one genome in four isolated accounts, then apply portfolio guard."""
+    """Evaluate isolated accounts and enforce the earliest synchronized portfolio stop."""
     if set(assets) != set(PAIRS):
         raise ValueError("Se requieren datasets para EURUSD, GBPUSD, AUDUSD y USDCAD")
-    pair_results = {pair: _evaluate_pair(genome, assets[pair], pair) for pair in PAIRS}
+
+    # First pass discovers the earliest portfolio or single-account stop.
+    preliminary = {pair: _evaluate_pair(genome, assets[pair], pair) for pair in PAIRS}
+    initial_returns, initial_times = _portfolio_returns(preliminary)
+    kill = portfolio_kill_switch(initial_returns, event_times_ns=initial_times)
+
+    account_stops = []
+    for pair in PAIRS:
+        metric = preliminary[pair]["metrics"]
+        if metric.get("account_stop") and metric.get("account_stop_time_utc"):
+            timestamp = pd.Timestamp(metric["account_stop_time_utc"])
+            account_stops.append((int(timestamp.value), pair, metric.get("stop_reason")))
+
+    stop_candidates = []
+    if kill.get("triggered") and kill.get("triggered_at_ns") is not None:
+        stop_candidates.append((
+            int(kill["triggered_at_ns"]),
+            str(kill.get("reason")),
+            None,
+        ))
+    if account_stops:
+        earliest_account = min(account_stops, key=lambda item: item[0])
+        stop_candidates.append((
+            earliest_account[0],
+            "individual_account_stop",
+            {"pair": earliest_account[1], "reason": earliest_account[2]},
+        ))
+
+    if stop_candidates:
+        stop_ns, stop_reason, account_stop_detail = min(stop_candidates, key=lambda item: item[0])
+        # Stop all four account streams before decisions at/after the trigger.
+        pair_results = {
+            pair: _evaluate_pair(
+                genome, assets[pair], pair, portfolio_stop_time_ns=stop_ns
+            ) for pair in PAIRS
+        }
+        kill = dict(kill)
+        kill.update(
+            triggered=True,
+            reason=stop_reason,
+            triggered_at_ns=int(stop_ns),
+            triggered_at_utc=pd.Timestamp(stop_ns, tz="UTC").isoformat(),
+            account_stop_detail=account_stop_detail,
+        )
+    else:
+        pair_results = preliminary
+        kill = dict(kill, triggered_at_utc=None, account_stop_detail=None)
+
     metrics = {pair: pair_results[pair]["metrics"] for pair in PAIRS}
-    returns = _portfolio_returns(pair_results)
-    kill = portfolio_kill_switch(returns)
+    final_returns, final_times = _portfolio_returns(pair_results)
     fitness = multi_asset_fitness(metrics, kill)
-    return dict(pair_metrics=metrics, fitness=fitness,
-                ledgers={pair: pair_results[pair]["ledger"] for pair in PAIRS},
-                portfolio_returns=returns)
+    return dict(
+        pair_metrics=metrics,
+        fitness=fitness,
+        ledgers={pair: pair_results[pair]["ledger"] for pair in PAIRS},
+        portfolio_returns=final_returns,
+        portfolio_event_times_ns=final_times,
+    )
 
 
 def breed_generation(
