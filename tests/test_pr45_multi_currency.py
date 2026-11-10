@@ -26,7 +26,7 @@ def _ohlcv_bars(count=130, start="2026-11-09T00:00:00Z", minutes=5):
     low = np.minimum(open_, close) - 0.00010
     # Create a confirmed bullish FVG on bar 3: low[3] > high[1].
     # Bar 4 stays above the lower edge, so the zone remains active.
-    high[1] = 1.10000
+    high[1] = 1.10002
     open_[3], close[3], high[3], low[3] = 1.10090, 1.10100, 1.10110, 1.10080
     open_[4], close[4], high[4], low[4] = 1.10100, 1.10102, 1.10112, 1.10090
     # At 07:00 UTC the first London bar sweeps the completed Asia high
@@ -118,6 +118,25 @@ def test_missing_pair_or_no_trades_cannot_receive_positive_fitness():
     result = multi_asset_fitness(metrics)
     assert result["fitness"] == 0.0
     assert result["eligible"] is False
+
+
+def test_profit_factor_infinite_is_distinct_from_undefined_no_trades():
+    metrics = {
+        pair: dict(
+            profit_factor=None,
+            profit_factor_status="infinite_no_losses",
+            max_drawdown_fraction=0.05,
+            trades=10,
+            wins=10,
+            losses=0,
+            account_stop=False,
+        )
+        for pair in PAIRS
+    }
+    result = multi_asset_fitness(metrics)
+    assert result["eligible"] is True
+    assert result["fitness_status"] == "unbounded_infinite"
+    assert result["min_profit_factor_status"] == "infinite_no_losses"
 
 
 def test_correlated_losses_and_combined_drawdown_trigger_global_kill_switch():
