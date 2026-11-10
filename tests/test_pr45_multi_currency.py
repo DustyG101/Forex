@@ -24,16 +24,17 @@ def _ohlcv_bars(count=130, start="2026-11-09T00:00:00Z", minutes=5):
     open_ = np.r_[close[0], close[:-1]]
     high = np.maximum(open_, close) + 0.00010
     low = np.minimum(open_, close) - 0.00010
-    # Make a completed bullish three-bar imbalance at index 3; keep it open.
+    # Create a confirmed bullish FVG on bar 3: low[3] > high[1].
+    # Bar 4 stays above the lower edge, so the zone remains active.
     high[1] = 1.10000
-    low[3] = 1.10080
-    high[3] = max(open_[3], close[3]) + 0.00005
-    low[3] = min(open_[3], close[3]) - 0.00005
-    # The first London bar sweeps the completed Asia high and closes back below.
+    open_[3], close[3], high[3], low[3] = 1.10090, 1.10100, 1.10110, 1.10080
+    open_[4], close[4], high[4], low[4] = 1.10100, 1.10102, 1.10112, 1.10090
+    # At 07:00 UTC the first London bar sweeps the completed Asia high
+    # and closes back below it.
     high[84] = 1.10300
-    close[84] = 1.10290
-    open_[84] = 1.10295
-    low[84] = 1.10270
+    close[84] = 1.10090
+    open_[84] = 1.10092
+    low[84] = 1.10070
     return pd.DataFrame(dict(
         timestamp=timestamps, open=open_, high=high, low=low,
         close=close, volume=np.ones(count),
