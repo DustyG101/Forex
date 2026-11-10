@@ -20,8 +20,6 @@ import pandas as pd
 
 from .adaptive_gate import AdaptiveGate
 from .context_features import FEATURE_NAMES, normalized_context_matrix
-from .evolution_multiscale import POPULATION, evolve_population
-
 PAIRS = ("EURUSD", "GBPUSD", "AUDUSD", "USDCAD")
 BASE_FEATURE_COUNT = 8
 ORIGINAL_GENOME_LENGTH = 22
@@ -771,6 +769,8 @@ def _evaluate_population(population: np.ndarray, assets: dict):
 def run_evolution(seed_manifest: str | Path, data_root: str | Path,
                   output_dir: str | Path, config: EvolutionConfig | None = None):
     """Continúa los seis fundadores con el evolucionador original y fitness conjunto."""
+    from .evolution_multiscale import POPULATION, evolve_population
+
     cfg = config or EvolutionConfig()
     seed_path = Path(seed_manifest)
     original, seed_metadata, _ = load_generation_zero(seed_path)

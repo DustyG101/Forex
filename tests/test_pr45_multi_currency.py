@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import ast
 
 import numpy as np
 import pandas as pd
@@ -9,10 +10,9 @@ from src.context_features import (
     ContextConfig, FEATURE_NAMES, build_micro_event_features,
     normalized_context_matrix,
 )
-from src.evolution_multiscale import evolve_population as original_evolve_population
 from src.multi_asset_evolution import (
     EvolutionConfig, PAIRS, _align_m15_to_m5, assert_zero_context_equivalence,
-    evolve_population, expand_generation_zero, load_generation_zero,
+    expand_generation_zero, load_generation_zero,
     multi_asset_fitness, portfolio_kill_switch,
 )
 
@@ -162,8 +162,22 @@ def test_m15_alignment_rejects_context_at_exactly_15_minute_age():
     np.testing.assert_array_equal(indices, [-1, -1, 0, 0, 0, 0])
 
 
-def test_multi_currency_uses_the_existing_evolution_engine():
-    assert evolve_population is original_evolve_population
+def test_multi_currency_delegates_to_the_existing_evolution_engine():
+    source = (ROOT / "src/multi_asset_evolution.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    imports = [
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom) and node.module == "evolution_multiscale"
+    ]
+    assert any(
+        {alias.name for alias in node.names} >= {"POPULATION", "evolve_population"}
+        for node in imports
+    )
+    assert not any(
+        isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and node.name == "breed_generation"
+        for node in tree.body
+    )
     config = EvolutionConfig()
     assert config.generations == 20
     assert config.seed == 20261110
