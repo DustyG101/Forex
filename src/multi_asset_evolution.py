@@ -219,7 +219,7 @@ def _causal_gate_reasons(decision_times: pd.DatetimeIndex, scores: np.ndarray,
     return reasons
 
 
-def _evaluate_pair(genome, data: dict, pair: str):
+def _evaluate_pair(genome, data: dict, pair: str, *, portfolio_stop_time_ns: int | None = None):
     times = pd.DatetimeIndex(pd.to_datetime(data["decision_times_ns"], unit="ns", utc=True))
     base = np.asarray(data["base_features"], dtype=np.float64)
     context = np.asarray(data["context_features"], dtype=np.float64)
@@ -268,6 +268,7 @@ def _evaluate_pair(genome, data: dict, pair: str):
     max_dd = 0.0
     stopped = False
     stop_reason = None
+    stop_time = None
     gross_win = gross_loss = 0.0
     pnl_total = 0.0
     wins = losses = ties = executed = 0
@@ -288,6 +289,11 @@ def _evaluate_pair(genome, data: dict, pair: str):
             exit_reason="not_entered",
         )
         if idx not in accepted_set:
+            ledger.append(item)
+            continue
+        if portfolio_stop_time_ns is not None and times[idx].value >= portfolio_stop_time_ns:
+            item["gate_reason"] = "portfolio_kill_switch"
+            item["exit_reason"] = "portfolio_kill_switch"
             ledger.append(item)
             continue
         if stopped:
@@ -320,20 +326,29 @@ def _evaluate_pair(genome, data: dict, pair: str):
         if balance < STAKE or dd + 1e-12 >= ACCOUNT_DRAWDOWN_LIMIT:
             stopped = True
             stop_reason = "insufficient_balance" if balance < STAKE else "drawdown_limit"
+            stop_time = settle_time.isoformat()
             item["account_stop"] = stop_reason
         ledger.append(item)
 
     pf = gross_win / gross_loss if gross_loss > 0 else None
+    if gross_loss > 0:
+        pf_status = "finite"
+    elif executed == 0:
+        pf_status = "undefined_no_trades"
+    elif gross_win > 0:
+        pf_status = "infinite_no_losses"
+    else:
+        pf_status = "undefined_no_wins_or_losses"
     observed_hours = len(times) * 5.0 / 60.0
     metrics = dict(
         pair=pair,
         profit_factor=float(pf) if pf is not None else None,
-        profit_factor_status=("finite" if pf is not None else
-                              "undefined_no_trades" if executed == 0 else "infinite_no_losses"),
+        profit_factor_status=pf_status,
         max_drawdown_fraction=float(max_dd),
         max_drawdown_pct=float(max_dd * 100.0),
         trades=int(executed), wins=int(wins), losses=int(losses), ties=int(ties),
         pnl_usd=float(pnl_total), account_stop=bool(stopped), stop_reason=stop_reason,
+        account_stop_time_utc=stop_time,
         observed_hours=float(observed_hours),
         trades_per_hour=float(executed / observed_hours) if observed_hours else 0.0,
         proposed=int(len(proposed)), accepted=int(len(accepted)),
