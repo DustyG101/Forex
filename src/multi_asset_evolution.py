@@ -363,8 +363,13 @@ def _max_pairwise_loss_correlation(window: np.ndarray) -> float | None:
     losses = np.minimum(np.asarray(window, dtype=np.float64), 0.0)
     if losses.ndim != 2 or losses.shape[1] != 4:
         raise ValueError("La correlación requiere cuatro series de pares")
-    corr = np.corrcoef(losses, rowvar=False)
-    upper = corr[np.triu_indices(4, k=1)]
+    # Constant downside series carry no correlation information. Exclude them
+    # before corrcoef to avoid invalid-divide warnings and undefined pairs.
+    variable = np.std(losses, axis=0) > 0.0
+    if np.count_nonzero(variable) < 2:
+        return None
+    corr = np.corrcoef(losses[:, variable], rowvar=False)
+    upper = corr[np.triu_indices(corr.shape[0], k=1)]
     finite = upper[np.isfinite(upper)]
     return float(np.max(finite)) if len(finite) else None
 
