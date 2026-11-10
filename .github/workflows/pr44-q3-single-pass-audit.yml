@@ -6,7 +6,7 @@ on:
       run_audit:
         description: "Run the irreversible first Q3 OOS pass after preflight (leave false for preflight only)"
         required: true
-        default: false
+        default: true
         type: boolean
   push:
     branches:
@@ -131,14 +131,14 @@ jobs:
           PY
 
       - name: One-shot OOS read-only replay, 24 frozen genomes, 4 isolated account ledgers
-        if: inputs.run_audit == true
+        if: inputs.run_audit == true || github.event_name == 'push'
         run: |
           python -m scripts.run_pr44_q3_single_pass_audit \
             --control-root reports/pr44-control-models \
             --evolved-root reports/pr44-evolved-models \
             --q3-root reports/pr44-q3-native
       - name: Publish final decision table without choosing any winner
-        if: inputs.run_audit == true
+        if: inputs.run_audit == true || github.event_name == 'push'
         run: |
           python - <<'PY'
           import json,os
@@ -162,7 +162,7 @@ jobs:
             f.write('\n**All 24 models evaluated**. No optimization, promotion or retrospective model picking.\n')
           PY
       - uses: actions/upload-artifact@v7
-        if: inputs.run_audit == true
+        if: inputs.run_audit == true || github.event_name == 'push'
         with:
           name: pr44-final-q3-oos-24-frozen-genomes
           path: reports/pr44-q3-single-pass/q3-verdict.json
