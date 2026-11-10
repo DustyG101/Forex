@@ -655,6 +655,25 @@ def _verify_context_feature_names(asset: dict, label: str):
         raise ValueError(f"{label}: orden/versión de features no coincide con Data Farm")
 
 
+def _align_m15_to_m5(m5_decision_times_ns: np.ndarray, m15_decision_times_ns: np.ndarray):
+    """Return M5 rows with a closed M15 context younger than one full M15 bar."""
+    t5 = np.asarray(m5_decision_times_ns, dtype=np.int64)
+    t15 = np.asarray(m15_decision_times_ns, dtype=np.int64)
+    if (t5.ndim != 1 or t15.ndim != 1 or
+            (len(t5) > 1 and np.any(np.diff(t5) <= 0)) or
+            (len(t15) > 1 and np.any(np.diff(t15) <= 0))):
+        raise ValueError("Tiempos M5/M15 deben ser vectores estrictamente crecientes")
+    idx15 = np.searchsorted(t15, t5, side="right") - 1
+    valid = idx15 >= 0
+    valid_indices = np.flatnonzero(valid)
+    # At exactly 15 minutes the prior M15 context is stale: the next M15
+    # close should already exist, otherwise the feed has a gap.
+    valid[valid_indices] = (
+        t5[valid_indices] - t15[idx15[valid_indices]] < 15 * 60 * 1_000_000_000
+    )
+    return valid, idx15
+
+
 def load_multicurrency_datasets(data_root: str | Path):
     """Join Data Farm M5/M15 context to the existing PR44 eight-column base.
 
@@ -708,12 +727,7 @@ def load_multicurrency_datasets(data_root: str | Path):
         if not np.array_equal(np.asarray(m15["row_times_ns"], dtype=np.int64) + step15, t15):
             raise ValueError(f"{pair}: timestamp M15 no corresponde a su cierre")
         # At each M5 decision, use only a recently closed M15 candle.
-        idx15 = np.searchsorted(t15, t5, side="right") - 1
-        valid = idx15 >= 0
-        valid_indices = np.flatnonzero(valid)
-        valid[valid_indices] = (
-            t5[valid_indices] - t15[idx15[valid_indices]] < step15
-        )
+        valid, idx15 = _align_m15_to_m5(t5, t15)
         if valid.sum() < 100:
             raise ValueError(f"{pair}: cobertura M15 cerrada y reciente insuficiente para alinear M5")
         t5 = t5[valid]
