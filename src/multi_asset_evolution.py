@@ -12,6 +12,7 @@ from collections import deque
 from dataclasses import dataclass
 from hashlib import sha256
 import json
+import math
 from pathlib import Path
 
 import numpy as np
@@ -405,44 +406,65 @@ def portfolio_kill_switch(
 
 
 def multi_asset_fitness(pair_metrics: dict, kill_switch: dict | None = None):
-    """Exact requested fitness: min(PF_i) * (1 - max(DD_i))."""
+    """Exact requested fitness: min(PF_i) * (1 - max(DD_i)).
+
+    PF is mathematically +infinity when a pair has wins but no losses.
+    A pair with no trades, or only refunds, has undefined PF and cannot qualify.
+    JSON reports encode an all-pairs infinite result as null + status, never NaN.
+    """
     if set(pair_metrics) != set(PAIRS):
         raise ValueError("El fitness exige resultados completos de los cuatro pares")
     pfs, drawdowns = [], []
     reasons = []
     for pair in PAIRS:
-        m = pair_metrics[pair]
-        pf = m.get("profit_factor")
-        dd = m.get("max_drawdown_fraction")
-        if m.get("trades", 0) <= 0:
+        metrics = pair_metrics[pair]
+        pf = metrics.get("profit_factor")
+        status = metrics.get("profit_factor_status")
+        dd = metrics.get("max_drawdown_fraction")
+        trades = int(metrics.get("trades", 0))
+        wins = int(metrics.get("wins", 0))
+        if trades <= 0:
             reasons.append(f"{pair}:no_trades")
-        if pf is None or not np.isfinite(pf) or pf < 0:
+        if status == "finite" and pf is not None and np.isfinite(pf) and pf >= 0:
+            pfs.append(float(pf))
+        elif status == "infinite_no_losses" and trades > 0 and wins > 0:
+            pfs.append(math.inf)
+        else:
             reasons.append(f"{pair}:undefined_profit_factor")
         if dd is None or not np.isfinite(dd) or not 0 <= dd <= 1:
             raise ValueError(f"Drawdown inválido en {pair}")
-        if m.get("account_stop"):
+        if metrics.get("account_stop"):
             reasons.append(f"{pair}:account_stop")
-        if pf is not None and np.isfinite(pf) and pf >= 0:
-            pfs.append(float(pf))
         drawdowns.append(float(dd))
-    if len(pfs) != 4:
-        value = 0.0
-        min_pf = None
-    else:
-        min_pf = float(min(pfs))
-        value = min_pf * (1.0 - max(drawdowns))
+    min_pf = min(pfs) if len(pfs) == 4 else None
+    max_dd = max(drawdowns)
+    raw_value = min_pf * (1.0 - max_dd) if min_pf is not None else 0.0
+    unbounded = bool(min_pf is not None and math.isinf(raw_value))
+    value = None if unbounded else float(raw_value)
     kill = kill_switch or {"triggered": False, "reason": None}
     if kill.get("triggered"):
         reasons.append("portfolio_kill_switch:" + str(kill.get("reason")))
     return dict(
-        fitness=float(value),
+        fitness=value,
+        fitness_status="unbounded_infinite" if unbounded else "finite",
         formula="min(PF_pair) * (1 - max(DD_pair_fraction))",
-        min_profit_factor=min_pf,
-        max_drawdown_fraction=float(max(drawdowns)),
+        min_profit_factor=None if min_pf is None or math.isinf(min_pf) else float(min_pf),
+        min_profit_factor_status="infinite_no_losses" if min_pf is not None and math.isinf(min_pf) else (
+            "finite" if min_pf is not None else "undefined"
+        ),
+        max_drawdown_fraction=float(max_dd),
         eligible=not reasons,
         rejection_reasons=reasons,
         portfolio_kill_switch=kill,
     )
+
+
+def _fitness_rank_value(fitness: dict) -> float:
+    """Finite comparable rank value without serializing JSON Infinity."""
+    if fitness.get("fitness_status") == "unbounded_infinite":
+        return math.inf
+    value = fitness.get("fitness")
+    return -math.inf if value is None else float(value)
 
 
 def _portfolio_returns(pair_results: dict):
@@ -480,7 +502,7 @@ def breed_generation(
         raise ValueError("Población y fitness desalineados")
     order = sorted(range(len(pop)), key=lambda i: (
         bool(fitness_records[i]["fitness"]["eligible"]),
-        float(fitness_records[i]["fitness"]["fitness"]),
+        _fitness_rank_value(fitness_records[i]["fitness"]),
     ), reverse=True)
     elite_indices = order[:config.elite_count]
     parent_count = max(2, min(len(order), max(config.elite_count, len(order) // 2)))
@@ -628,7 +650,7 @@ def run_evolution(seed_manifest: str | Path, data_root: str | Path,
 
     final_records = report["generations"][-1]["individuals"]
     best = max(final_records, key=lambda row: (
-        bool(row["fitness"]["eligible"]), float(row["fitness"]["fitness"])
+        bool(row["fitness"]["eligible"]), _fitness_rank_value(row["fitness"])
     ))
     report["best_final_individual"] = best["individual"]
     report["best_final_fitness"] = best["fitness"]
