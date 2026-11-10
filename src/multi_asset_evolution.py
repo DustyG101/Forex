@@ -712,7 +712,7 @@ def load_multicurrency_datasets(data_root: str | Path):
         valid = idx15 >= 0
         valid_indices = np.flatnonzero(valid)
         valid[valid_indices] = (
-            t5[valid_indices] - t15[idx15[valid_indices]] <= step15
+            t5[valid_indices] - t15[idx15[valid_indices]] < step15
         )
         if valid.sum() < 100:
             raise ValueError(f"{pair}: cobertura M15 cerrada y reciente insuficiente para alinear M5")
